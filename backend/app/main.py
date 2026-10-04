@@ -178,7 +178,13 @@ def startup() -> None:
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
-    return {"status": "ok", "service": "xiantu-api", "qwen_configured": is_qwen_configured(), "time": datetime.now(timezone.utc).isoformat()}
+    return {
+        "status": "ok",
+        "service": "xiantu-api",
+        "database_backend": engine.url.get_backend_name(),
+        "qwen_configured": is_qwen_configured(),
+        "time": datetime.now(timezone.utc).isoformat(),
+    }
 
 @app.get("/readyz")
 def ready(db: Session = Depends(get_db)) -> dict[str, str]:
