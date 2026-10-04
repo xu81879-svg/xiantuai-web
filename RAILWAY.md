@@ -19,6 +19,14 @@ AUTO_CREATE_SCHEMA=false
 SEED_DEMO_USER=false
 LOCAL_STORAGE_DIR=/app/data
 CORS_ORIGINS=https://你的 Railway 域名
+QWEN_API_KEY=请配置为 Railway Secret
+QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+QWEN_IMAGE_BASE_URL=https://dashscope.aliyuncs.com/api/v1
+QWEN_VISION_MODEL=qwen3-vl-plus
+QWEN_IMAGE_MODEL=qwen-image-2.0-pro
+QWEN_IMAGE_SIZE=1024*1024
+QWEN_TIMEOUT_SECONDS=45
+QWEN_MOCK_FALLBACK=false
 ```
 
 Railway 官方文档说明：PostgreSQL 服务会提供 `DATABASE_URL`，服务之间使用 reference variable 连接；Railway 不会直接执行 `docker-compose.yml`，而是为每个服务分别部署。因此本项目的 Railway 生产入口是根目录 Dockerfile，而不是 Compose。
@@ -38,6 +46,14 @@ uvicorn app.main:app --host 0.0.0.0 --port $PORT
 ```
 
 Railway 使用 `/readyz` 作为健康检查。首次部署成功后，在 Networking 中生成 Public Domain，即可访问首页。
+
+部署后可从本地或 CI 执行健康检查脚本：
+
+```bash
+./scripts/railway_healthcheck.sh https://你的-app.up.railway.app
+```
+
+脚本只请求 `/api/health` 和 `/readyz`，验证应用进程与数据库连接，不调用千问、不消耗 API 额度。千问商品识别使用 OpenAI 兼容的 Vision Chat 接口，商品生图使用 DashScope 原生 Image 接口；Qwen-Image 返回的临时 URL 会被下载到 `LOCAL_STORAGE_DIR`，避免 24 小时后失效。
 
 ## 文件上传持久化
 

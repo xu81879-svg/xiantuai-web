@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from fastapi import FastAPI
 from .database import Base, SessionLocal, engine, ensure_local_storage, get_db
 from .models import Generation, Product, User
+from .qwen import QwenError, allow_mock_fallback, generate_image, is_qwen_configured, persist_remote_image, recognize_product as qwen_recognize_product
 from .security import create_access_token, hash_password, read_user_id, secret_key, verify_password
 
 APP_DIR = Path(__file__).resolve().parent.parent
@@ -90,11 +91,12 @@ def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(secu
     return user
 
 
-def make_assets(product_name: str) -> list[dict[str, Any]]:
+def make_assets(product_name: str, primary_image: str | None = None) -> list[dict[str, Any]]:
     titles = [product_name, "甜蜜多汁 · 一口爆甜", "源自产地 · 自然成熟", "新鲜好物 · 限时特惠", "把新鲜带回家"]
     badges = ["电商主图", "详情页卖点", "场景图", "促销活动", "朋友圈分享"]
     kinds = ["main", "detail", "scene", "sale", "share"]
-    return [{"title": title, "badge": badge, "kind": kind, "image": image} for title, badge, kind, image in zip(titles, badges, kinds, ASSET_IMAGES)]
+    images = [primary_image or ASSET_IMAGES[0], *ASSET_IMAGES[1:]]
+    return [{"title": title, "badge": badge, "kind": kind, "image": image} for title, badge, kind, image in zip(titles, badges, kinds, images)]
 
 @app.on_event("startup")
 def startup() -> None:
@@ -110,7 +112,7 @@ def startup() -> None:
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
-    return {"status": "ok", "service": "xiantu-api", "time": datetime.now(timezone.utc).isoformat()}
+    return {"status": "ok", "service": "xiantu-api", "qwen_configured": is_qwen_configured(), "time": datetime.now(timezone.utc).isoformat()}
 
 @app.get("/readyz")
 def ready(db: Session = Depends(get_db)) -> dict[str, str]:
@@ -153,7 +155,14 @@ async def recognize_product(file: UploadFile = File(...), user: User = Depends(c
     target = UPLOAD_DIR / stored_name
     with target.open("wb") as output:
         shutil.copyfileobj(file.file, output)
-    return {"name": "崂山大樱桃", "origin": "山东·青岛崂山", "spec": "500g", "tags": ["果大", "脆甜", "新鲜", "当季"], "image_url": f"/uploads/{stored_name}", "filename": file.filename, "user_id": user.id}
+    result = {"name": "崂山大樱桃", "origin": "山东·青岛崂山", "spec": "500g", "tags": ["果大", "脆甜", "新鲜", "当季"]}
+    if is_qwen_configured():
+        try:
+            result = {**result, **qwen_recognize_product(target, suffix)}
+        except QwenError as exc:
+            if not allow_mock_fallback():
+                raise HTTPException(status_code=502, detail=f"千问识别失败：{exc}") from exc
+    return {**result, "image_url": f"/uploads/{stored_name}", "filename": file.filename, "user_id": user.id}
 
 @app.post("/api/products")
 def create_product(payload: ProductPayload, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
@@ -206,7 +215,15 @@ def create_generation(payload: GenerationPayload, user: User = Depends(current_u
         db.flush()
     if not product:
         raise HTTPException(status_code=422, detail="请提供商品信息")
-    assets = make_assets(product.name)
+    primary_image = None
+    if is_qwen_configured():
+        try:
+            remote_image = generate_image(product.name, product.origin, product.spec, payload.usage, payload.style)
+            primary_image = persist_remote_image(remote_image, UPLOAD_DIR)
+        except QwenError as exc:
+            if not allow_mock_fallback():
+                raise HTTPException(status_code=502, detail=f"千问生图失败：{exc}") from exc
+    assets = make_assets(product.name, primary_image)
     generation = Generation(owner_id=user.id, product_id=product.id, usage=payload.usage, style=payload.style, status="completed", assets=assets)
     db.add(generation)
     db.commit()

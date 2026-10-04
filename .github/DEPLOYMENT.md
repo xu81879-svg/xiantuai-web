@@ -31,10 +31,14 @@ GitHub Actions 负责提交门禁，不把生产密钥写进 Git。Railway 负�
 | `SEED_DEMO_USER` | `false` | 生产禁止创建演示账号 |
 | `LOCAL_STORAGE_DIR` | `/app/data` | 仅在已配置 Volume 时使用 |
 | `CORS_ORIGINS` | `https://<railway-domain>` | 只允许真实前端来源，不使用 `*` |
-| `OPENAI_BASE_URL` | 按实际 Provider 设置 | 可选 |
-| `OPENAI_API_KEY` | Railway Secret | 可选，不提交 Git |
-| `OPENAI_VISION_MODEL` | 按实际 Provider 设置 | 可选 |
-| `OPENAI_IMAGE_MODEL` | 按实际 Provider 设置 | 可选 |
+| `QWEN_API_KEY` | Railway Secret | 千问视觉和生图 API Key，不提交 Git |
+| `QWEN_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | Qwen-VL 兼容 OpenAI Chat API |
+| `QWEN_IMAGE_BASE_URL` | `https://dashscope.aliyuncs.com/api/v1` | Qwen-Image 原生 DashScope API |
+| `QWEN_VISION_MODEL` | `qwen3-vl-plus` | 商品图片识别模型 |
+| `QWEN_IMAGE_MODEL` | `qwen-image-2.0-pro` | 商品视觉素材生成模型 |
+| `QWEN_IMAGE_SIZE` | `1024*1024` | 生成尺寸 |
+| `QWEN_TIMEOUT_SECONDS` | `45` | 外部 API 超时 |
+| `QWEN_MOCK_FALLBACK` | `false` | 生产禁止静默 Mock 降级 |
 
 生产变量模板见根目录 `railway.env.example`。其中的中文占位值只能复制后替换，不能直接作为生产值。
 
