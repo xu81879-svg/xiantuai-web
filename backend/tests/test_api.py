@@ -1,5 +1,4 @@
 import os
-from pathlib import Path
 
 os.environ["DATABASE_URL"] = "sqlite:///./test-mvp.db"
 os.environ["AUTO_CREATE_SCHEMA"] = "true"
@@ -8,16 +7,16 @@ os.environ["JWT_SECRET"] = "test-secret"
 os.environ["DEMO_USER_EMAIL"] = "demo@xiantu.ai"
 os.environ["DEMO_USER_PASSWORD"] = "Demo123456!"
 os.environ["DEMO_USER_NAME"] = "演示商家"
+os.environ["PAYPAL_MOCK_MODE"] = "true"
 
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.database import SessionLocal
+from app.models import User
 
 
 def test_auth_and_generation_flow():
-    db_path = Path("test-mvp.db")
-    if db_path.exists():
-        db_path.unlink()
     with TestClient(app) as client:
         login = client.post("/api/auth/login", json={"email": "demo@xiantu.ai", "password": "Demo123456!"})
         assert login.status_code == 200
@@ -48,5 +47,57 @@ def test_auth_and_generation_flow():
         assert assets.json()["items"][0]["generation_id"] == generation.json()["id"]
         deleted = client.delete(f"/api/products/{product_id}", headers=headers)
         assert deleted.status_code == 200
-    if db_path.exists():
-        db_path.unlink()
+
+
+def test_credit_purchase_is_idempotent_and_generation_debits_balance():
+    with TestClient(app) as client:
+        login = client.post("/api/auth/login", json={"email": "demo@xiantu.ai", "password": "Demo123456!"})
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        with SessionLocal() as db:
+            user = db.get(User, login.json()["user"]["id"])
+            assert user is not None
+            user.credit_balance = 10
+            db.commit()
+
+        before = client.get("/api/auth/me", headers=headers).json()
+        assert before["credit_balance"] == 10
+
+        purchase = client.post("/api/billing/paypal/orders", headers=headers, json={"plan_code": "starter"})
+        assert purchase.status_code == 200
+        purchase_data = purchase.json()
+        assert purchase_data["order"]["status"] == "completed"
+        assert purchase_data["credit_balance"] == 30
+
+        duplicate_capture = client.post(
+            f"/api/billing/paypal/orders/{purchase_data['order']['id']}/capture",
+            headers=headers,
+            json={"paypal_order_id": purchase_data["paypal_order_id"]},
+        )
+        assert duplicate_capture.status_code == 200
+        assert duplicate_capture.json()["already_completed"] is True
+        assert duplicate_capture.json()["credit_balance"] == 30
+
+        with SessionLocal() as db:
+            user = db.get(User, login.json()["user"]["id"])
+            assert user is not None
+            user.credit_balance = 1
+            db.commit()
+
+        generation = client.post(
+            "/api/generations",
+            headers=headers,
+            json={"product": {"name": "额度测试商品", "origin": "山东", "spec": "500g", "tags": ["新鲜"]}, "usage": "hero", "style": "natural"},
+        )
+        assert generation.status_code == 200
+        assert client.get("/api/auth/me", headers=headers).json()["credit_balance"] == 0
+
+        exhausted = client.post(
+            "/api/generations",
+            headers=headers,
+            json={"product": {"name": "额度耗尽商品", "origin": "山东", "spec": "500g", "tags": ["新鲜"]}, "usage": "hero", "style": "natural"},
+        )
+        assert exhausted.status_code == 402
+        assert exhausted.json()["detail"] == "生成额度不足，请购买额度包"

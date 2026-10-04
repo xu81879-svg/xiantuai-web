@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-项目使用 Railway 根目录 `Dockerfile` 和 `railway.toml` 部署单一 Web Service，前端在镜像构建阶段编译，FastAPI 在运行时提供页面和 API。生产数据库使用 Railway PostgreSQL；数据库结构由 Alembic 管理，当前最新迁移为 `0002_templates_help`。
+项目使用 Railway 根目录 `Dockerfile` 和 `railway.toml` 部署单一 Web Service，前端在镜像构建阶段编译，FastAPI 在运行时提供页面和 API。生产数据库使用 Railway PostgreSQL；数据库结构由 Alembic 管理，当前最新迁移为 `0004_paypal_webhooks`。
 
 GitHub Actions 负责提交门禁，不把生产密钥写进 Git。Railway 负责从 `main` 构建和发布服务；在 Railway 项目中开启 GitHub 仓库的自动部署，或使用 Railway Dashboard 手动部署经过 Actions 检查的 `main`。
 
@@ -58,8 +58,8 @@ GitHub Actions 负责提交门禁，不把生产密钥写进 Git。Railway 负�
 2. 配置 `DATABASE_URL=${{Postgres.DATABASE_URL}}`、`AUTO_CREATE_SCHEMA=false` 和 `SEED_DEMO_USER=false`。
 3. 先在 staging 环境执行 `alembic upgrade head`，再检查 `alembic current` 是否为 `0004_paypal_webhooks`。
 4. 在 PayPal Developer Dashboard 配置 `https://<railway-domain>/api/webhooks/paypal`，订阅 `PAYMENT.CAPTURE.COMPLETED`，并把 Webhook ID 写入 `PAYPAL_WEBHOOK_ID`。
-4. 验证注册、登录、商品创建、商品列表、素材库和生成记录接口。
-5. 通过 Railway 发布 Web Service；启动过程会执行迁移并通过 `/readyz` 后接收流量。
+5. 验证注册、登录、商品创建、商品列表、素材库和生成记录接口。
+6. 通过 Railway 发布 Web Service；启动过程会执行迁移并通过 `/readyz` 后接收流量。
 
 ### 日常 schema 变更
 

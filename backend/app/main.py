@@ -234,7 +234,7 @@ def create_paypal_order(payload: CreditOrderPayload, user: User = Depends(curren
         order.provider_order_id = f"mock-{order.id}"
         complete_credit_order(db, order, user)
         db.commit()
-        return {"order": serialize_order(order), "credit_balance": user.credit_balance, "demo": True}
+        return {"order": serialize_order(order), "paypal_order_id": order.provider_order_id, "credit_balance": user.credit_balance, "demo": True}
     if not paypal_configured():
         db.rollback()
         raise HTTPException(status_code=503, detail="PayPal 尚未配置，请联系管理员")
