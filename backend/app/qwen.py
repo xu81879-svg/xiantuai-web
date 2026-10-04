@@ -153,11 +153,12 @@ def recognize_product(image_path: Path, suffix: str) -> dict[str, Any]:
     }
 
 
-def generate_image(product_name: str, origin: str, spec: str, usage: str, style: str) -> str:
+def generate_image(product_name: str, origin: str, spec: str, usage: str, style: str, tone: str = "fresh", composition: str = "center", background: str = "clean", platform: str = "taobao") -> str:
     """Use Qwen-Image through DashScope's native synchronous generation endpoint."""
     prompt = (
         f"为生鲜商品‘{product_name}’制作一张中文电商视觉素材。产地：{origin or '优质产地'}；规格：{spec or '精选装'}；"
-        f"用途：{usage}；风格：{style}。主体清晰、食材新鲜有水润质感，构图适合电商展示，留出简洁文字空间，"
+        f"用途：{usage}；风格：{style}；画面气质：{tone}；构图：{composition}；背景：{background}；发布渠道：{platform}。"
+        "主体清晰、食材新鲜有水润质感，构图适合电商展示，留出简洁文字空间，"
         "不要生成虚假品牌 Logo、乱码或水印。"
     )
     payload = {

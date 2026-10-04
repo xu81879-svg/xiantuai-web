@@ -68,6 +68,14 @@ PGSSLMODE=require
 
 当前会员升级采用 PayPal 一次性额度包，不做自动续费：尝鲜包 20 次、专业包 100 次、商家包 300 次。生产环境需要创建 PayPal REST App，配置 Client ID、Client Secret 和 Webhook ID，并将 `PUBLIC_APP_URL` 设置为真实 HTTPS 域名；`PAYPAL_MOCK_MODE` 只能在本地开发使用。前端通过 PayPal JavaScript SDK 嵌入按钮，后端仍负责创建订单、捕获订单、金额校验和幂等入账；Webhook 用于补偿用户关闭页面后的异步支付完成事件。
 
+PayPal Developer Dashboard 的生产 Webhook URL 必须设置为：
+
+```text
+https://你的 Railway 公共域名/api/webhooks/paypal
+```
+
+至少勾选 `PAYMENT.CAPTURE.COMPLETED` 事件，并将该 Webhook 生成的 ID 填入 `PAYPAL_WEBHOOK_ID`。上线核验顺序为：`GET /readyz` 返回 `{"status":"ready"}`；`GET /api/billing/paypal/config`（需登录）返回 `enabled: true` 且 `client_id` 非空；PayPal Dashboard 中的 Webhook 状态为已启用；最后使用 PayPal Sandbox/Live 的 Webhook Simulator 或真实小额订单确认回调返回 2xx。不要把 Client Secret 或 Webhook ID 写入前端或 Git。
+
 部署后可从本地或 CI 执行健康检查脚本：
 
 ```bash

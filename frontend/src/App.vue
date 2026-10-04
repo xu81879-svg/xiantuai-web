@@ -28,6 +28,10 @@ const authToken = ref(localStorage.getItem('xiantu_token') || '')
 const activeNav = ref('首页')
 const activeUsage = ref('hero')
 const activeStyle = ref('natural')
+const activeTone = ref('fresh')
+const activeComposition = ref('center')
+const activeBackground = ref('clean')
+const activePlatform = ref('taobao')
 const isGenerating = ref(false)
 const notice = ref('')
 const products = ref<Product[]>([])
@@ -65,6 +69,11 @@ const styles: StyleItem[] = [
   { id: 'farm', title: '产地直采', image: 'https://images.unsplash.com/photo-1471943311424-646960669fbc?auto=format&fit=crop&w=260&q=80' },
   { id: 'sale', title: '促销活动', image: 'https://images.unsplash.com/photo-1577003833619-76bbd7f82948?auto=format&fit=crop&w=260&q=80' },
 ]
+
+const tones = [{ id: 'fresh', title: '清新自然' }, { id: 'premium', title: '高级质感' }, { id: 'warm', title: '温暖生活' }, { id: 'sale', title: '促销醒目' }]
+const compositions = [{ id: 'center', title: '主体居中' }, { id: 'rule-of-thirds', title: '三分构图' }, { id: 'close-up', title: '近景特写' }, { id: 'flat-lay', title: '俯拍平铺' }]
+const backgrounds = [{ id: 'clean', title: '简洁留白' }, { id: 'farm', title: '产地场景' }, { id: 'table', title: '餐桌生活' }, { id: 'festival', title: '节日氛围' }]
+const platforms = [{ id: 'taobao', title: '淘宝 / 京东' }, { id: 'xiaohongshu', title: '小红书' }, { id: 'wechat', title: '朋友圈' }, { id: 'douyin', title: '抖音电商' }]
 
 const results = ref<Result[]>(staticPreview ? [
   { title: '崂山大樱桃', badge: '电商主图', kind: 'main', image: 'https://images.unsplash.com/photo-1528825871115-3581a5387919?auto=format&fit=crop&w=900&q=88' },
@@ -377,7 +386,7 @@ async function generate() {
     await saveProduct()
     const response = await fetch(`${API_BASE}/generations`, {
       method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ product: product.value, usage: activeUsage.value, style: activeStyle.value }),
+      body: JSON.stringify({ product: product.value, usage: activeUsage.value, style: activeStyle.value, tone: activeTone.value, composition: activeComposition.value, background: activeBackground.value, platform: activePlatform.value }),
     })
     if (!response.ok) {
       const error = await response.json().catch(() => ({}))
@@ -523,6 +532,13 @@ function downloadAll() {
             <div class="usage-grid"><button v-for="usage in usages" :key="usage.id" class="usage-card" :class="{ chosen: activeUsage === usage.id }" @click="activeUsage = usage.id"><span class="usage-icon">{{ usage.icon }}</span><b>{{ usage.title }}</b><small>{{ usage.desc }}</small><em v-if="activeUsage === usage.id">✓</em></button></div>
             <div class="step-title style-step"><span>3</span><div><b>选择风格</b><small>AI 会根据商品自动推荐合适的风格</small></div></div>
             <div class="style-scroll"><button v-for="style in styles" :key="style.id" class="style-card" :class="{ chosen: activeStyle === style.id }" @click="activeStyle = style.id"><div><img :src="style.image" alt="" /><em v-if="style.tag">{{ style.tag }}</em></div><b>{{ style.title }}</b></button></div>
+            <div class="personalization">
+              <div class="personalization-title"><span>✦ 个性化参数</span><small>让每次生成更贴合渠道与场景</small></div>
+              <div class="parameter-group"><span>画面气质</span><div class="parameter-options"><button v-for="item in tones" :key="item.id" :class="{ chosen: activeTone === item.id }" @click="activeTone = item.id">{{ item.title }}</button></div></div>
+              <div class="parameter-group"><span>构图方式</span><div class="parameter-options"><button v-for="item in compositions" :key="item.id" :class="{ chosen: activeComposition === item.id }" @click="activeComposition = item.id">{{ item.title }}</button></div></div>
+              <div class="parameter-group"><span>背景场景</span><div class="parameter-options"><button v-for="item in backgrounds" :key="item.id" :class="{ chosen: activeBackground === item.id }" @click="activeBackground = item.id">{{ item.title }}</button></div></div>
+              <div class="parameter-group"><span>发布渠道</span><div class="parameter-options"><button v-for="item in platforms" :key="item.id" :class="{ chosen: activePlatform === item.id }" @click="activePlatform = item.id">{{ item.title }}</button></div></div>
+            </div>
             <button class="generate-btn" :class="{ loading: isGenerating }" @click="generate"><span>{{ isGenerating ? '✦ 正在生成，请稍候…' : '✦ 一键生成整套图片　→' }}</span></button><p class="time-tip">预计耗时 30-60 秒</p>
           </section>
 

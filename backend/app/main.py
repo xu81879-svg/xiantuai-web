@@ -72,6 +72,10 @@ class GenerationPayload(BaseModel):
     product: ProductPayload | None = None
     usage: str = Field(default="hero", max_length=40)
     style: str = Field(default="natural", max_length=40)
+    tone: str = Field(default="fresh", max_length=40)
+    composition: str = Field(default="center", max_length=40)
+    background: str = Field(default="clean", max_length=40)
+    platform: str = Field(default="taobao", max_length=40)
 
 class CreditOrderPayload(BaseModel):
     plan_code: str = Field(min_length=1, max_length=40)
@@ -408,7 +412,7 @@ def create_generation(payload: GenerationPayload, user: User = Depends(current_u
     primary_image = None
     if is_qwen_configured():
         try:
-            remote_image = generate_image(product.name, product.origin, product.spec, payload.usage, payload.style)
+            remote_image = generate_image(product.name, product.origin, product.spec, payload.usage, payload.style, payload.tone, payload.composition, payload.background, payload.platform)
             primary_image = persist_remote_image(remote_image, UPLOAD_DIR)
         except QwenError as exc:
             if not allow_mock_fallback():
