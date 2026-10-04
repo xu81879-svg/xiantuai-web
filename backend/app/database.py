@@ -16,6 +16,10 @@ def database_url() -> str:
         raw = "postgresql+psycopg://" + raw.removeprefix("postgres://")
     elif raw.startswith("postgresql://"):
         raw = "postgresql+psycopg://" + raw.removeprefix("postgresql://")
+    if raw.startswith("postgresql+psycopg://") and "sslmode=" not in raw:
+        default_sslmode = "require" if os.getenv("ENVIRONMENT", "development").lower() == "production" else "prefer"
+        sslmode = os.getenv("PGSSLMODE", default_sslmode)
+        raw = f"{raw}{'&' if '?' in raw else '?'}sslmode={sslmode}"
     return raw
 
 

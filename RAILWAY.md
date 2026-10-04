@@ -12,6 +12,7 @@
 
 ```dotenv
 DATABASE_URL=${{Postgres.DATABASE_URL}}
+PGSSLMODE=require
 ENVIRONMENT=production
 JWT_SECRET=请替换为至少32位随机字符串
 JWT_EXPIRE_MINUTES=10080
@@ -29,7 +30,7 @@ QWEN_TIMEOUT_SECONDS=45
 QWEN_MOCK_FALLBACK=false
 ```
 
-Railway 官方文档说明：PostgreSQL 服务会提供 `DATABASE_URL`，服务之间使用 reference variable 连接；Railway 不会直接执行 `docker-compose.yml`，而是为每个服务分别部署。因此本项目的 Railway 生产入口是根目录 Dockerfile，而不是 Compose。
+Railway 官方文档说明：PostgreSQL 服务会提供 `DATABASE_URL`，服务之间使用 reference variable 连接；请把 `Postgres` 替换为你实际创建的数据库服务名。如果使用 `ghcr.io/railwayapp-templates/postgres-ssl:18`，保留 `PGSSLMODE=require`。Railway 不会直接执行 `docker-compose.yml`，而是为每个服务分别部署，因此本项目的 Railway 生产入口是根目录 Dockerfile，而不是 Compose。
 
 ## 首次发布
 
@@ -46,6 +47,15 @@ uvicorn app.main:app --host 0.0.0.0 --port $PORT
 ```
 
 Railway 使用 `/readyz` 作为健康检查。首次部署成功后，在 Networking 中生成 Public Domain，即可访问首页。
+
+数据库服务创建完成后，Web Service 至少需要配置：
+
+```dotenv
+DATABASE_URL=${{你的 PostgreSQL 服务名.DATABASE_URL}}
+PGSSLMODE=require
+```
+
+发布日志应依次看到 `alembic upgrade head` 成功、Uvicorn 启动成功，随后 `/readyz` 返回 `{"status":"ready"}`。如果迁移失败，先检查 Web Service 与数据库服务是否位于同一个 Railway Project，以及 reference variable 中的服务名是否完全一致。
 
 部署后可从本地或 CI 执行健康检查脚本：
 
