@@ -8,8 +8,23 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 
+def _clean_env_value(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1].strip()
+    return value
+
+
 def database_url() -> str:
-    raw = os.getenv("DATABASE_URL", "sqlite:///./xiantu.db")
+    raw_value = os.getenv("DATABASE_URL")
+    if raw_value is None or not _clean_env_value(raw_value):
+        if os.getenv("ENVIRONMENT", "development").lower() == "production":
+            raise RuntimeError("DATABASE_URL must be configured in production; refusing SQLite fallback")
+        raw = "sqlite:///./xiantu.db"
+    else:
+        raw = _clean_env_value(raw_value)
+    if "${{" in raw or "}}" in raw:
+        raise RuntimeError("DATABASE_URL contains an unresolved Railway reference variable")
     if raw.startswith("postgresql+asyncpg://"):
         raw = "postgresql+psycopg://" + raw.removeprefix("postgresql+asyncpg://")
     elif raw.startswith("postgres://"):

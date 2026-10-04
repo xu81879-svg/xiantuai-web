@@ -8,10 +8,10 @@
 2. 在 Railway 新建 Project，选择 **Deploy from GitHub Repo**，选择本仓库。
 3. Railway 会读取根目录 `railway.toml` 和 `Dockerfile`。
 4. 在项目中添加 Railway PostgreSQL 服务。
-5. 在 Web Service 的 Variables 中添加下列变量，其中 `DATABASE_URL` 使用 Railway 的服务引用变量：
+5. 在 Web Service 的 Variables 中添加下列变量，其中 `DATABASE_URL` 必须使用 Railway 的服务引用变量：在 Web Service 中点击 **Add Variable → Add Reference**，选择实际 PostgreSQL 服务的 `DATABASE_URL`。不要把 `${{Postgres.DATABASE_URL}}` 当作普通文本粘贴，也不要手动添加引号；如果 PostgreSQL 服务名称不是 `Postgres`，不能继续使用这个示例名称。
 
 ```dotenv
-DATABASE_URL=${{Postgres.DATABASE_URL}}
+# DATABASE_URL 请在 Railway Web Service Variables 中使用 Add Reference 设置
 PGSSLMODE=require
 ENVIRONMENT=production
 JWT_SECRET=请替换为至少32位随机字符串
@@ -39,7 +39,9 @@ PAYPAL_MOCK_MODE=false
 PAYPAL_TIMEOUT_SECONDS=30
 ```
 
-Railway 官方文档说明：PostgreSQL 服务会提供 `DATABASE_URL`，服务之间使用 reference variable 连接；请把 `Postgres` 替换为你实际创建的数据库服务名。如果使用 `ghcr.io/railwayapp-templates/postgres-ssl:18`，保留 `PGSSLMODE=require`。Railway 不会直接执行 `docker-compose.yml`，而是为每个服务分别部署，因此本项目的 Railway 生产入口是根目录 Dockerfile，而不是 Compose。
+Railway 官方文档说明：PostgreSQL 服务会提供 `DATABASE_URL`，服务之间使用 reference variable 连接；请在变量面板中选择实际创建的数据库服务，不要手工填写服务名。Web Service 只需要读取 `DATABASE_URL`，不需要额外添加 `POSTGRES_USER`、`POSTGRES_PASSWORD` 或 `POSTGRES_DB`；这些是数据库容器的初始化变量，不能替代应用连接串。如果使用 `ghcr.io/railwayapp-templates/postgres-ssl:18`，保留 `PGSSLMODE=require`。
+
+应用会自动去除 `DATABASE_URL` 两侧意外出现的单引号或双引号，以兼容 Railway 面板将值显示或注入为带引号字符串；但如果生产环境没有解析出 `DATABASE_URL`，应用现在会明确拒绝启动，不再静默回退到 SQLite。这样可以避免服务看似健康但重启后丢失用户数据。
 
 ## 首次发布
 

@@ -18,13 +18,13 @@ GitHub Actions 负责提交门禁，不把生产密钥写进 Git。Railway 负�
 
 ## 生产环境变量
 
-在 Railway Web Service 的 Variables 中设置以下变量。`DATABASE_URL` 应使用 Railway Reference Variable，而不是复制数据库密码：
+在 Railway Web Service 的 Variables 中设置以下变量。`DATABASE_URL` 必须通过 **Add Reference** 选择实际 PostgreSQL 服务的 `DATABASE_URL`，不要把 `${{Postgres.DATABASE_URL}}` 作为普通文本粘贴，也不要手动添加引号。Web Service 不需要 `POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DB`；这些不是应用连接串：
 
 | 变量 | 生产值 | 说明 |
 |---|---|---|
 | `ENVIRONMENT` | `production` | 启用生产配置 |
 | `DEBUG` | `false` | 禁止生产调试模式 |
-| `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` | 自动引用 PostgreSQL 连接串 |
+| `DATABASE_URL` | Railway Add Reference → PostgreSQL → `DATABASE_URL` | 自动引用 PostgreSQL 连接串；不要手工复制密码 |
 | `PGSSLMODE` | `require` | `ghcr.io/railwayapp-templates/postgres-ssl:18` 使用 SSL；若连接串已有 `sslmode` 参数则以连接串为准 |
 | `JWT_SECRET` | 由密码管理器生成的 32+ 字符随机值 | 只存 Railway Secret |
 | `JWT_EXPIRE_MINUTES` | `10080` 或更短 | 当前默认 7 天；高安全场景建议缩短 |
@@ -48,14 +48,14 @@ GitHub Actions 负责提交门禁，不把生产密钥写进 Git。Railway 负�
 | `PUBLIC_APP_URL` | `https://<railway-domain>` | PayPal 返回地址必须是公开 HTTPS 域名 |
 | `PAYPAL_MOCK_MODE` | `false` | 生产必须关闭 |
 
-生产变量模板见根目录 `railway.env.example`。其中的中文占位值只能复制后替换，不能直接作为生产值。
+生产变量模板见根目录 `railway.env.example`。其中的中文占位值只能复制后替换，不能直接作为生产值。应用会清理 URL 两侧意外的单/双引号；生产环境如果没有解析出 `DATABASE_URL` 会直接拒绝启动，不再静默使用 SQLite。
 
 ## 数据库迁移顺序
 
 ### 首次上线
 
 1. 创建 Railway PostgreSQL，并确认服务状态为 healthy。
-2. 配置 `DATABASE_URL=${{Postgres.DATABASE_URL}}`、`AUTO_CREATE_SCHEMA=false` 和 `SEED_DEMO_USER=false`。
+2. 在 Web Service 中使用 Add Reference 配置 PostgreSQL 的 `DATABASE_URL`，并设置 `AUTO_CREATE_SCHEMA=false` 和 `SEED_DEMO_USER=false`。
 3. 先在 staging 环境执行 `alembic upgrade head`，再检查 `alembic current` 是否为 `0004_paypal_webhooks`。
 4. 在 PayPal Developer Dashboard 配置 `https://<railway-domain>/api/webhooks/paypal`，订阅 `PAYMENT.CAPTURE.COMPLETED`，并把 Webhook ID 写入 `PAYPAL_WEBHOOK_ID`。
 5. 验证注册、登录、商品创建、商品列表、素材库和生成记录接口。
