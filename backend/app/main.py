@@ -19,7 +19,8 @@ from sqlalchemy.orm import Session
 
 from fastapi import FastAPI
 from .database import Base, SessionLocal, engine, ensure_local_storage, get_db
-from .models import Generation, HelpArticle, Product, Template, User
+from .models import CreditOrder, CreditPlan, CreditTransaction, Generation, HelpArticle, Product, Template, User
+from .paypal import PayPalError, approval_url, capture_order, configured as paypal_configured, create_order as paypal_create_order, mock_mode as paypal_mock_mode
 from .qwen import QwenError, allow_mock_fallback, generate_image, is_qwen_configured, persist_remote_image, recognize_product as qwen_recognize_product
 from .security import create_access_token, hash_password, read_user_id, secret_key, verify_password
 
@@ -72,9 +73,32 @@ class GenerationPayload(BaseModel):
     usage: str = Field(default="hero", max_length=40)
     style: str = Field(default="natural", max_length=40)
 
+class CreditOrderPayload(BaseModel):
+    plan_code: str = Field(min_length=1, max_length=40)
+
+class CreditCapturePayload(BaseModel):
+    paypal_order_id: str = Field(min_length=1, max_length=100)
+
 
 def serialize_user(user: User) -> dict[str, Any]:
-    return {"id": user.id, "email": user.email, "display_name": user.display_name, "locale": user.locale, "timezone": user.timezone}
+    return {"id": user.id, "email": user.email, "display_name": user.display_name, "locale": user.locale, "timezone": user.timezone, "credit_balance": user.credit_balance}
+
+
+def serialize_plan(plan: CreditPlan) -> dict[str, Any]:
+    return {"code": plan.code, "name": plan.name, "description": plan.description, "credits": plan.credits, "amount": plan.amount, "currency": plan.currency}
+
+
+def serialize_order(order: CreditOrder) -> dict[str, Any]:
+    return {"id": order.id, "plan_code": order.plan_code, "provider": order.provider, "status": order.status, "credits": order.credits, "amount": order.amount, "currency": order.currency, "created_at": order.created_at.isoformat() if order.created_at else None, "completed_at": order.completed_at.isoformat() if order.completed_at else None}
+
+
+def complete_credit_order(db: Session, order: CreditOrder, user: User) -> None:
+    if order.status == "completed":
+        return
+    order.status = "completed"
+    order.completed_at = datetime.now(timezone.utc)
+    user.credit_balance += order.credits
+    db.add(CreditTransaction(user_id=user.id, order_id=order.id, amount=order.credits, balance_after=user.credit_balance, reason="paypal_purchase"))
 
 
 def serialize_product(product: Product) -> dict[str, Any]:
@@ -118,6 +142,17 @@ def seed_catalog(db: Session) -> None:
         ])
     db.commit()
 
+def seed_credit_plans(db: Session) -> None:
+    if db.scalar(select(CreditPlan.code)):
+        return
+    db.add_all([
+        CreditPlan(code="starter", name="尝鲜包", description="适合第一次体验，生成 20 张素材", credits=20, amount="5.00", currency="USD", sort_order=10),
+        CreditPlan(code="pro", name="专业包", description="适合日常经营，生成 100 张素材", credits=100, amount="19.00", currency="USD", sort_order=20),
+        CreditPlan(code="business", name="商家包", description="适合批量营销，生成 300 张素材", credits=300, amount="49.00", currency="USD", sort_order=30),
+    ])
+    db.commit()
+
+
 @app.on_event("startup")
 def startup() -> None:
     ensure_local_storage()
@@ -126,6 +161,7 @@ def startup() -> None:
         Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
         seed_catalog(db)
+        seed_credit_plans(db)
         if os.getenv("SEED_DEMO_USER", "true").lower() == "true":
             demo_email = os.getenv("DEMO_USER_EMAIL", "demo@xiantu.ai")
             demo_password = os.getenv("DEMO_USER_PASSWORD", "")
@@ -171,6 +207,73 @@ def login(payload: LoginPayload, db: Session = Depends(get_db)) -> dict[str, Any
 @app.get("/api/auth/me")
 def me(user: User = Depends(current_user)) -> dict[str, Any]:
     return serialize_user(user)
+
+@app.get("/api/billing/plans")
+def billing_plans(user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+    plans = db.scalars(select(CreditPlan).where(CreditPlan.is_active.is_(True)).order_by(CreditPlan.sort_order)).all()
+    return {"items": [serialize_plan(plan) for plan in plans], "credit_balance": user.credit_balance}
+
+@app.get("/api/billing/me")
+def billing_me(user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+    orders = db.scalars(select(CreditOrder).where(CreditOrder.user_id == user.id).order_by(CreditOrder.created_at.desc()).limit(20)).all()
+    return {"credit_balance": user.credit_balance, "orders": [serialize_order(order) for order in orders]}
+
+@app.post("/api/billing/paypal/orders")
+def create_paypal_order(payload: CreditOrderPayload, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+    plan = db.get(CreditPlan, payload.plan_code)
+    if not plan or not plan.is_active:
+        raise HTTPException(status_code=404, detail="额度包不存在")
+    order = CreditOrder(user_id=user.id, plan_code=plan.code, provider="paypal", status="pending", credits=plan.credits, amount=plan.amount, currency=plan.currency)
+    db.add(order)
+    db.flush()
+    if paypal_mock_mode():
+        order.provider_order_id = f"mock-{order.id}"
+        complete_credit_order(db, order, user)
+        db.commit()
+        return {"order": serialize_order(order), "credit_balance": user.credit_balance, "demo": True}
+    if not paypal_configured():
+        db.rollback()
+        raise HTTPException(status_code=503, detail="PayPal 尚未配置，请联系管理员")
+    try:
+        public_url = os.getenv("PUBLIC_APP_URL", "").rstrip("/")
+        if not public_url:
+            raise PayPalError("PUBLIC_APP_URL is not configured")
+        paypal_order = paypal_create_order(local_order_id=order.id, plan_name=plan.name, amount=plan.amount, currency=plan.currency, return_url=f"{public_url}/?paypal_order_id={order.id}", cancel_url=f"{public_url}/?paypal_cancelled=1")
+        order.provider_order_id = paypal_order.get("id")
+        db.commit()
+        return {"order": serialize_order(order), "approval_url": approval_url(paypal_order), "demo": False}
+    except PayPalError as exc:
+        db.rollback()
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+@app.post("/api/billing/paypal/orders/{order_id}/capture")
+def capture_paypal_order(order_id: str, payload: CreditCapturePayload, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+    order = db.scalar(select(CreditOrder).where(CreditOrder.id == order_id, CreditOrder.user_id == user.id))
+    if not order:
+        raise HTTPException(status_code=404, detail="订单不存在")
+    if order.status == "completed":
+        return {"order": serialize_order(order), "credit_balance": user.credit_balance, "already_completed": True}
+    if order.provider_order_id != payload.paypal_order_id:
+        raise HTTPException(status_code=400, detail="PayPal 订单不匹配")
+    if paypal_mock_mode():
+        complete_credit_order(db, order, user)
+        db.commit()
+        return {"order": serialize_order(order), "credit_balance": user.credit_balance, "demo": True}
+    try:
+        result = capture_order(payload.paypal_order_id)
+    except PayPalError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if result.get("status") != "COMPLETED":
+        order.status = "failed"
+        db.commit()
+        raise HTTPException(status_code=402, detail="PayPal 支付尚未完成")
+    capture = ((result.get("purchase_units") or [{}])[0].get("payments") or {}).get("captures") or [{}]
+    capture_status = capture[0].get("status")
+    if capture_status != "COMPLETED":
+        raise HTTPException(status_code=402, detail="PayPal 扣款未完成")
+    complete_credit_order(db, order, user)
+    db.commit()
+    return {"order": serialize_order(order), "credit_balance": user.credit_balance, "demo": False}
 
 @app.post("/api/products/recognize")
 async def recognize_product(file: UploadFile = File(...), user: User = Depends(current_user)) -> dict[str, Any]:
@@ -232,6 +335,8 @@ def delete_product(product_id: str, user: User = Depends(current_user), db: Sess
 
 @app.post("/api/generations")
 def create_generation(payload: GenerationPayload, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+    if user.credit_balance < 1:
+        raise HTTPException(status_code=402, detail="生成额度不足，请购买额度包")
     product = db.get(Product, payload.product_id) if payload.product_id else None
     if product and product.owner_id != user.id:
         raise HTTPException(status_code=403, detail="无权访问该商品")
@@ -250,8 +355,10 @@ def create_generation(payload: GenerationPayload, user: User = Depends(current_u
             if not allow_mock_fallback():
                 raise HTTPException(status_code=502, detail=f"千问生图失败：{exc}") from exc
     assets = make_assets(product.name, primary_image)
+    user.credit_balance -= 1
     generation = Generation(owner_id=user.id, product_id=product.id, usage=payload.usage, style=payload.style, status="completed", assets=assets)
     db.add(generation)
+    db.add(CreditTransaction(user_id=user.id, amount=-1, balance_after=user.credit_balance, reason="generation"))
     db.commit()
     db.refresh(generation)
     return {"id": generation.id, "status": generation.status, "usage": generation.usage, "style": generation.style, "product": serialize_product(product), "assets": assets}

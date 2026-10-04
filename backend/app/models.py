@@ -23,6 +23,7 @@ class User(Base):
     locale: Mapped[str] = mapped_column(String(12), default="zh-CN")
     timezone: Mapped[str] = mapped_column(String(64), default="Asia/Shanghai")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    credit_balance: Mapped[int] = mapped_column(Integer, default=10)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
     products: Mapped[list["Product"]] = relationship(back_populates="owner", cascade="all, delete-orphan")
@@ -87,4 +88,46 @@ class HelpArticle(Base):
     answer: Mapped[str] = mapped_column(Text)
     is_published: Mapped[bool] = mapped_column(Boolean, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
+class CreditPlan(Base):
+    __tablename__ = "credit_plans"
+
+    code: Mapped[str] = mapped_column(String(40), primary_key=True)
+    name: Mapped[str] = mapped_column(String(80))
+    description: Mapped[str] = mapped_column(String(255), default="")
+    credits: Mapped[int] = mapped_column(Integer)
+    amount: Mapped[str] = mapped_column(String(20))
+    currency: Mapped[str] = mapped_column(String(3), default="USD")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
+class CreditOrder(Base):
+    __tablename__ = "credit_orders"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    plan_code: Mapped[str] = mapped_column(ForeignKey("credit_plans.code"), index=True)
+    provider: Mapped[str] = mapped_column(String(30), default="paypal")
+    provider_order_id: Mapped[str | None] = mapped_column(String(100), unique=True, nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="pending")
+    credits: Mapped[int] = mapped_column(Integer)
+    amount: Mapped[str] = mapped_column(String(20))
+    currency: Mapped[str] = mapped_column(String(3), default="USD")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CreditTransaction(Base):
+    __tablename__ = "credit_transactions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    order_id: Mapped[str | None] = mapped_column(ForeignKey("credit_orders.id", ondelete="SET NULL"), nullable=True, unique=True)
+    amount: Mapped[int] = mapped_column(Integer)
+    balance_after: Mapped[int] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(String(80), default="purchase")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)

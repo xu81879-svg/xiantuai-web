@@ -28,6 +28,14 @@ QWEN_IMAGE_MODEL=qwen-image-2.0-pro
 QWEN_IMAGE_SIZE=1024*1024
 QWEN_TIMEOUT_SECONDS=45
 QWEN_MOCK_FALLBACK=false
+PAYPAL_BASE_URL=https://api-m.paypal.com
+PAYPAL_CLIENT_ID=请配置为 Railway Secret
+PAYPAL_CLIENT_SECRET=请配置为 Railway Secret
+PAYPAL_CURRENCY=USD
+PAYPAL_BRAND_NAME=鲜图 AI
+PUBLIC_APP_URL=https://你的 Railway 域名
+PAYPAL_MOCK_MODE=false
+PAYPAL_TIMEOUT_SECONDS=30
 ```
 
 Railway 官方文档说明：PostgreSQL 服务会提供 `DATABASE_URL`，服务之间使用 reference variable 连接；请把 `Postgres` 替换为你实际创建的数据库服务名。如果使用 `ghcr.io/railwayapp-templates/postgres-ssl:18`，保留 `PGSSLMODE=require`。Railway 不会直接执行 `docker-compose.yml`，而是为每个服务分别部署，因此本项目的 Railway 生产入口是根目录 Dockerfile，而不是 Compose。
@@ -56,6 +64,8 @@ PGSSLMODE=require
 ```
 
 发布日志应依次看到 `alembic upgrade head` 成功、Uvicorn 启动成功，随后 `/readyz` 返回 `{"status":"ready"}`。如果迁移失败，先检查 Web Service 与数据库服务是否位于同一个 Railway Project，以及 reference variable 中的服务名是否完全一致。
+
+当前会员升级采用 PayPal 一次性额度包，不做自动续费：尝鲜包 20 次、专业包 100 次、商家包 300 次。生产环境需要创建 PayPal REST App，配置 Client ID、Client Secret，并将 `PUBLIC_APP_URL` 设置为真实 HTTPS 域名；`PAYPAL_MOCK_MODE` 只能在本地开发使用。
 
 部署后可从本地或 CI 执行健康检查脚本：
 

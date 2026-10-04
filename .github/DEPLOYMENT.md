@@ -40,6 +40,12 @@ GitHub Actions 负责提交门禁，不把生产密钥写进 Git。Railway 负�
 | `QWEN_IMAGE_SIZE` | `1024*1024` | 生成尺寸 |
 | `QWEN_TIMEOUT_SECONDS` | `45` | 外部 API 超时 |
 | `QWEN_MOCK_FALLBACK` | `false` | 生产禁止静默 Mock 降级 |
+| `PAYPAL_BASE_URL` | `https://api-m.paypal.com` | 生产环境；沙盒使用 `https://api-m.sandbox.paypal.com` |
+| `PAYPAL_CLIENT_ID` | Railway Secret | PayPal REST 应用 Client ID |
+| `PAYPAL_CLIENT_SECRET` | Railway Secret | PayPal REST 应用 Secret |
+| `PAYPAL_CURRENCY` | `USD` | 第一版额度包统一美元定价 |
+| `PUBLIC_APP_URL` | `https://<railway-domain>` | PayPal 返回地址必须是公开 HTTPS 域名 |
+| `PAYPAL_MOCK_MODE` | `false` | 生产必须关闭 |
 
 生产变量模板见根目录 `railway.env.example`。其中的中文占位值只能复制后替换，不能直接作为生产值。
 
@@ -49,7 +55,7 @@ GitHub Actions 负责提交门禁，不把生产密钥写进 Git。Railway 负�
 
 1. 创建 Railway PostgreSQL，并确认服务状态为 healthy。
 2. 配置 `DATABASE_URL=${{Postgres.DATABASE_URL}}`、`AUTO_CREATE_SCHEMA=false` 和 `SEED_DEMO_USER=false`。
-3. 先在 staging 环境执行 `alembic upgrade head`，再检查 `alembic current` 是否为 `0002_templates_help`。
+3. 先在 staging 环境执行 `alembic upgrade head`，再检查 `alembic current` 是否为 `0003_credit_paypal`。
 4. 验证注册、登录、商品创建、商品列表、素材库和生成记录接口。
 5. 通过 Railway 发布 Web Service；启动过程会执行迁移并通过 `/readyz` 后接收流量。
 

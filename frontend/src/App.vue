@@ -8,6 +8,7 @@ type Product = { id?: string; name: string; origin: string; spec: string; tags: 
 type Generation = { id: string; status: string; usage: string; style: string; count: number; assets: Result[]; product_id?: string | null; product_name?: string | null; created_at?: string }
 type TemplateItem = { id: string; title: string; category: string; description: string; preview_url: string; usage: string; style: string }
 type HelpItem = { id: string; category: string; question: string; answer: string }
+type CreditPlan = { code: string; name: string; description: string; credits: number; amount: string; currency: string }
 
 const API_BASE = '/api'
 const staticPreview = import.meta.env.VITE_STATIC_PREVIEW === 'true'
@@ -30,6 +31,10 @@ const libraryAssets = ref<Result[]>([])
 const generations = ref<Generation[]>([])
 const templates = ref<TemplateItem[]>([])
 const helpArticles = ref<HelpItem[]>([])
+const creditPlans = ref<CreditPlan[]>([])
+const creditBalance = ref(0)
+const showBilling = ref(false)
+const billingLoading = ref(false)
 const listLoading = ref(false)
 const listSearch = ref('')
 const helpSearch = ref('')
@@ -80,6 +85,7 @@ async function submitAuth() {
     localStorage.setItem('xiantu_token', data.access_token)
     authenticated.value = true
     await loadWorkspaceData()
+    await loadBilling()
     notice.value = '登录成功，欢迎回来'
   } catch (error) {
     authError.value = error instanceof Error ? error.message : '操作失败，请稍后重试'
@@ -99,11 +105,65 @@ onMounted(async () => {
   try {
     const response = await fetch(`${API_BASE}/auth/me`, { headers: authHeaders() })
     authenticated.value = response.ok
-    if (response.ok) await loadWorkspaceData()
+    if (response.ok) {
+      await loadWorkspaceData()
+      await loadBilling()
+      const params = new URLSearchParams(window.location.search)
+      const localOrderId = params.get('paypal_order_id')
+      const paypalOrderId = params.get('token') || localOrderId
+      if (localOrderId && paypalOrderId) await capturePayPalOrder(localOrderId, paypalOrderId)
+    }
   } catch {
     authenticated.value = false
   }
 })
+
+async function loadBilling() {
+  if (staticPreview || !authToken.value) return
+  const response = await fetch(`${API_BASE}/billing/plans`, { headers: authHeaders() })
+  if (!response.ok) return
+  const data = await response.json()
+  creditPlans.value = data.items ?? []
+  creditBalance.value = data.credit_balance ?? 0
+}
+
+async function openBilling() {
+  if (staticPreview) { notice.value = '静态预览模式：PayPal 额度包将在生产环境启用'; return }
+  await loadBilling()
+  showBilling.value = true
+}
+
+async function purchasePlan(plan: CreditPlan) {
+  billingLoading.value = true
+  try {
+    const response = await fetch(`${API_BASE}/billing/paypal/orders`, { method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ plan_code: plan.code }) })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.detail || 'PayPal 订单创建失败')
+    if (data.approval_url) {
+      window.location.href = data.approval_url
+      return
+    }
+    creditBalance.value = data.credit_balance ?? creditBalance.value
+    showBilling.value = false
+    notice.value = `额度包已到账，可生成 ${creditBalance.value} 次素材`
+  } catch (error) {
+    notice.value = error instanceof Error ? error.message : '购买失败，请稍后重试'
+  } finally {
+    billingLoading.value = false
+  }
+}
+
+async function capturePayPalOrder(localOrderId: string, paypalOrderId: string) {
+  const response = await fetch(`${API_BASE}/billing/paypal/orders/${localOrderId}/capture`, { method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ paypal_order_id: paypalOrderId }) })
+  const data = await response.json().catch(() => ({}))
+  if (response.ok) {
+    creditBalance.value = data.credit_balance ?? creditBalance.value
+    notice.value = `PayPal 支付成功，当前剩余 ${creditBalance.value} 次额度`
+    window.history.replaceState({}, '', window.location.pathname)
+  } else {
+    notice.value = data.detail || 'PayPal 支付尚未完成'
+  }
+}
 
 async function loadWorkspaceData() {
   if (staticPreview || !authToken.value) return
@@ -219,6 +279,7 @@ async function generate() {
     const data = await response.json()
     if (Array.isArray(data.assets) && data.assets.length) results.value = data.assets
     await loadWorkspaceData()
+    await loadBilling()
     notice.value = '生成完成，素材已准备好'
   } catch (error) {
     notice.value = staticPreview ? '静态预览模式：这里会连接真实 AI 生图服务' : (error instanceof Error ? error.message : '生成失败，请稍后重试')
@@ -259,6 +320,21 @@ function downloadAll() {
       </div>
     </div>
     <div v-else class="app-shell">
+    <div v-if="showBilling" class="billing-overlay" @click.self="showBilling = false">
+      <section class="billing-modal">
+        <button class="billing-close" @click="showBilling = false">×</button>
+        <span class="eyebrow">PAYPAL CREDIT PACKS</span>
+        <h2>购买生成额度</h2>
+        <p class="billing-subtitle">当前余额 <b>{{ creditBalance }}</b> 次 · 一次购买，不自动续费</p>
+        <div class="billing-grid">
+          <article v-for="plan in creditPlans" :key="plan.code" class="billing-card">
+            <h3>{{ plan.name }}</h3><p>{{ plan.description }}</p><strong>{{ plan.credits }} 次</strong><span>{{ plan.currency }} {{ plan.amount }}</span>
+            <button :disabled="billingLoading" @click="purchasePlan(plan)">{{ billingLoading ? '处理中…' : 'PayPal 购买' }}</button>
+          </article>
+        </div>
+        <small class="billing-note">支付由 PayPal 处理，额度仅在 PayPal 支付完成后到账。</small>
+      </section>
+    </div>
     <header class="topbar">
       <div class="brand">
         <div class="brand-mark" aria-hidden="true"><span></span><i></i></div>
@@ -276,9 +352,9 @@ function downloadAll() {
           <button v-for="item in [{icon:'⌂',label:'首页'}, {icon:'▤',label:'我的商品'}, {icon:'▧',label:'素材库'}, {icon:'▢',label:'生成记录'}, {icon:'▣',label:'模板中心'}, {icon:'?',label:'帮助中心'}]" :key="item.label" :class="{ selected: activeNav === item.label || (activeNav === '首页' && item.label === '首页') }" @click="activeNav = item.label; notice = ''"><span>{{ item.icon }}</span>{{ item.label }}</button>
         </div>
         <div class="upgrade-card">
-          <div class="crown">♛</div><strong>会员升级</strong>
-          <p>解锁更多高级功能<br />批量生成、详情页、视频等</p>
-          <button @click="notice = '会员升级功能即将上线'">立即升级</button>
+          <div class="crown">♛</div><strong>生成额度</strong>
+          <p>当前剩余 {{ creditBalance }} 次<br />购买额度包即可继续创作</p>
+          <button @click="openBilling">购买额度</button>
         </div>
         <button class="brand-card" @click="notice = '鲜图 AI：让生鲜商家更轻松地卖货'"><img src="https://images.unsplash.com/photo-1542838132-92c53300491e?auto=format&fit=crop&w=180&q=80" alt="生鲜商品" /><span><b>鲜图 AI</b><small>让生鲜商家<br />更轻松地卖货</small></span></button>
         <div class="fresh-note"><span>好 生 鲜</span><b>需要好图片</b><div class="scribble">↗</div><div class="scenery"></div></div>
