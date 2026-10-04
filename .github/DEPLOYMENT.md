@@ -43,7 +43,7 @@ GitHub Actions 负责提交门禁，不把生产密钥写进 Git。Railway 负�
 ### 首次上线
 
 1. 创建 Railway PostgreSQL，并确认服务状态为 healthy。
-2. 配置 `DATABASE_URL=${{Postgres.DATABASE_URL}`、`AUTO_CREATE_SCHEMA=false` 和 `SEED_DEMO_USER=false`。
+2. 配置 `DATABASE_URL=${{Postgres.DATABASE_URL}}`、`AUTO_CREATE_SCHEMA=false` 和 `SEED_DEMO_USER=false`。
 3. 先在 staging 环境执行 `alembic upgrade head`，再检查 `alembic current` 是否为 `0001_initial`。
 4. 验证注册、登录、商品创建、商品列表、素材库和生成记录接口。
 5. 通过 Railway 发布 Web Service；启动过程会执行迁移并通过 `/readyz` 后接收流量。
