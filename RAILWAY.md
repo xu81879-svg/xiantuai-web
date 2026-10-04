@@ -84,6 +84,23 @@ https://你的 Railway 公共域名/api/webhooks/paypal
 
 脚本只请求 `/api/health` 和 `/readyz`，验证应用进程与数据库连接，不调用千问、不消耗 API 额度。千问商品识别使用 OpenAI 兼容的 Vision Chat 接口，商品生图使用 DashScope 原生 Image 接口；Qwen-Image 返回的临时 URL 会被下载到 `LOCAL_STORAGE_DIR`，避免 24 小时后失效。
 
+环境变量完整性检查使用 `scripts/check_railway_env.sh`。它不会打印 Secret 值，也不会自动创建账户或 PayPal 订单：
+
+```bash
+# 检查本地变量文件是否缺项、是否仍有占位值，以及生产安全开关
+./scripts/check_railway_env.sh --file railway.env.example
+
+# 检查线上健康状态
+./scripts/check_railway_env.sh --url https://你的-app.up.railway.app
+
+# 使用已有测试账户检查线上 PayPal runtime config；密码只通过环境变量传入
+RAILWAY_CHECK_EMAIL='you@example.com' \
+RAILWAY_CHECK_PASSWORD='你的密码' \
+./scripts/check_railway_env.sh --url https://你的-app.up.railway.app
+```
+
+线上检查可以确认 `/readyz`、`/api/health` 以及登录后的 `/api/billing/paypal/config`；它不能直接读取 Railway Secret 原文，只能根据应用运行时返回的 `enabled` 状态判断 PayPal 凭据是否生效。
+
 完整上线烟雾测试：
 
 ```bash
