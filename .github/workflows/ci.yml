@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-test:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install backend dependencies
+        run: python -m pip install -r backend/requirements.txt
+      - name: Run backend tests
+        working-directory: backend
+        env:
+          DATABASE_URL: sqlite:///./ci.db
+          AUTO_CREATE_SCHEMA: 'true'
+          SEED_DEMO_USER: 'true'
+          JWT_SECRET: ci-only-not-a-production-secret
+        run: pytest -q
+
+  frontend-build:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+  migration-test:
+    name: PostgreSQL migrations
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: xiantu
+          POSTGRES_PASSWORD: xiantu
+          POSTGRES_DB: xiantu
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U xiantu -d xiantu"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install backend dependencies
+        run: python -m pip install -r backend/requirements.txt
+      - name: Upgrade to latest schema
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+psycopg://xiantu:xiantu@127.0.0.1:5432/xiantu
+        run: alembic upgrade head
+      - name: Verify latest revision
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+psycopg://xiantu:xiantu@127.0.0.1:5432/xiantu
+        run: alembic current
+      - name: Verify downgrade and upgrade lifecycle
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+psycopg://xiantu:xiantu@127.0.0.1:5432/xiantu
+        run: alembic downgrade base && alembic upgrade head

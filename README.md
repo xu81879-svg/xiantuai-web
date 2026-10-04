@@ -184,11 +184,9 @@ curl -X PUT http://localhost:8000/api/cache/example \
 
 `/api/health` 会报告 Redis 是否可用。缓存键按用户隔离；生产业务接入时仍需设置键命名空间、TTL、容量上限、脱敏策略，并避免将密码、JWT 或支付数据写入缓存。
 
-## GitHub Actions 一键部署
+## GitHub Actions 与 Railway 部署
 
-工作流位于 [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml)，部署说明位于 [`.github/DEPLOYMENT.md`](.github/DEPLOYMENT.md)。Pull Request 会运行后端测试、前端测试、构建和 Compose 校验；推送到 `main` 或手动运行时，会在检查成功后通过 SSH 拉取代码并重建 Compose 服务。
-
-生产部署前需要配置 `DEPLOY_HOST`、`DEPLOY_USER`、`DEPLOY_SSH_KEY`、`DEPLOY_PATH` 和可选的 `DEPLOY_PORT` GitHub Secrets，并在服务器上预先创建 `backend/.env`。
+质量门禁工作流位于 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)，Pull Request 和 `main` push 会运行后端测试、前端构建，以及 PostgreSQL 16 的 Alembic 升级/回滚/再升级验证。生产部署方案位于 [`.github/DEPLOYMENT.md`](.github/DEPLOYMENT.md)。Railway 负责从 GitHub `main` 构建和发布，生产密钥只配置在 Railway Variables，不通过 GitHub Actions 访问生产数据库。
 
 
 ## 商品识别与真实 AI 生图
