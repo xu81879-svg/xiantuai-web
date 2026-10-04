@@ -1,0 +1,15 @@
+backend/.env
+.env
+.env.*
+!.env.example
+!backend/.env.example
+!railway.env.example
+backend/.venv/
+frontend/node_modules/
+frontend/dist/
+backend/data/
+backend/*.db
+backend/*.db-*
+__pycache__/
+.pytest_cache/
+*.pyc
