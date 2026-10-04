@@ -65,6 +65,24 @@ PGSSLMODE=require
 
 脚本只请求 `/api/health` 和 `/readyz`，验证应用进程与数据库连接，不调用千问、不消耗 API 额度。千问商品识别使用 OpenAI 兼容的 Vision Chat 接口，商品生图使用 DashScope 原生 Image 接口；Qwen-Image 返回的临时 URL 会被下载到 `LOCAL_STORAGE_DIR`，避免 24 小时后失效。
 
+完整上线烟雾测试：
+
+```bash
+./scripts/railway_smoke_test.sh https://你的-app.up.railway.app
+```
+
+脚本会创建一个临时测试账户，验证登录、当前用户、商品创建/搜索/更新/删除、模板中心、帮助中心、生成记录和素材库。默认会执行一次真实生成，因此如果已配置千问会消耗一次生图额度，并会保留一条生成记录；只验证非生图接口时执行：
+
+```bash
+SMOKE_SKIP_GENERATION=true ./scripts/railway_smoke_test.sh https://你的-app.up.railway.app
+```
+
+如需使用已有账户而不创建新账户：
+
+```bash
+SMOKE_AUTH_MODE=login SMOKE_EMAIL=you@example.com SMOKE_PASSWORD='你的密码' ./scripts/railway_smoke_test.sh https://你的-app.up.railway.app
+```
+
 ## 文件上传持久化
 
 当前 MVP 将上传图片保存到 `LOCAL_STORAGE_DIR`。Railway 默认容器文件系统不是长期对象存储，因此上线时建议给 Web Service 添加 Volume，并将挂载路径设置为 `/app/data`。后续接入 S3 / Cloudflare R2 / 阿里云 OSS 时，只需要替换 `recognize_product` 的文件保存实现，数据库中的 `image_url` 契约保持不变。

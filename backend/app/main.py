@@ -127,8 +127,13 @@ def startup() -> None:
     with SessionLocal() as db:
         seed_catalog(db)
         if os.getenv("SEED_DEMO_USER", "true").lower() == "true":
-            if not db.scalar(select(User).where(User.email == "demo@xiantu.ai")):
-                db.add(User(email="demo@xiantu.ai", password_hash=hash_password("Demo123456!"), display_name="演示商家"))
+            demo_email = os.getenv("DEMO_USER_EMAIL", "demo@xiantu.ai")
+            demo_password = os.getenv("DEMO_USER_PASSWORD", "")
+            demo_name = os.getenv("DEMO_USER_NAME", "演示商家")
+            if not demo_password:
+                raise RuntimeError("DEMO_USER_PASSWORD must be configured when SEED_DEMO_USER=true")
+            if not db.scalar(select(User).where(User.email == demo_email)):
+                db.add(User(email=demo_email, password_hash=hash_password(demo_password), display_name=demo_name))
                 db.commit()
 
 @app.get("/api/health")

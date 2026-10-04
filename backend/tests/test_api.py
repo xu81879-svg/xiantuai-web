@@ -5,6 +5,9 @@ os.environ["DATABASE_URL"] = "sqlite:///./test-mvp.db"
 os.environ["AUTO_CREATE_SCHEMA"] = "true"
 os.environ["SEED_DEMO_USER"] = "true"
 os.environ["JWT_SECRET"] = "test-secret"
+os.environ["DEMO_USER_EMAIL"] = "demo@xiantu.ai"
+os.environ["DEMO_USER_PASSWORD"] = "Demo123456!"
+os.environ["DEMO_USER_NAME"] = "演示商家"
 
 from fastapi.testclient import TestClient
 
