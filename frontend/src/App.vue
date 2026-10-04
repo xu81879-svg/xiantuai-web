@@ -36,7 +36,7 @@ const generations = ref<Generation[]>([])
 const templates = ref<TemplateItem[]>([])
 const helpArticles = ref<HelpItem[]>([])
 const creditPlans = ref<CreditPlan[]>([])
-const creditBalance = ref(0)
+const creditBalance = ref(staticPreview ? 10 : 0)
 const showBilling = ref(false)
 const billingLoading = ref(false)
 const paypalClientId = ref('')
@@ -73,6 +73,28 @@ const results = ref<Result[]>(staticPreview ? [
   { title: '新鲜大樱桃 · 限时特惠', badge: '促销活动', kind: 'sale', image: 'https://images.unsplash.com/photo-1577003833619-76bbd7f82948?auto=format&fit=crop&w=550&q=88' },
   { title: '把新鲜带回家', badge: '朋友圈分享', kind: 'share', image: 'https://images.unsplash.com/photo-1518977676601-b53f82aba655?auto=format&fit=crop&w=550&q=88' },
 ] : [])
+
+const previewPlans: CreditPlan[] = [
+  { code: 'starter', name: '尝鲜包', description: '适合第一次体验，生成 20 张素材', credits: 20, amount: '5.00', currency: 'USD' },
+  { code: 'pro', name: '专业包', description: '适合日常经营，生成 100 张素材', credits: 100, amount: '19.00', currency: 'USD' },
+  { code: 'business', name: '商家包', description: '适合批量营销，生成 300 张素材', credits: 300, amount: '49.00', currency: 'USD' },
+]
+
+if (staticPreview) {
+  products.value = [{ id: 'preview-product-1', name: '崂山大樱桃', origin: '山东·青岛崂山', spec: '500g', tags: ['果大', '脆甜', '新鲜', '当季'], image_url: productImage.value }]
+  libraryAssets.value = results.value.map((asset, index) => ({ ...asset, id: `preview-asset-${index + 1}`, product_name: '崂山大樱桃' }))
+  generations.value = [{ id: 'preview-generation-1', status: 'completed', usage: 'hero', style: 'natural', count: results.value.length, assets: results.value, product_id: 'preview-product-1', product_name: '崂山大樱桃', created_at: new Date().toISOString() }]
+  templates.value = [
+    { id: 'preview-template-1', title: '自然生鲜主图', category: '电商主图', description: '突出新鲜质感与商品主体，适合商品首图。', preview_url: styles[0].image, usage: 'hero', style: 'natural' },
+    { id: 'preview-template-2', title: '精品详情卖点', category: '详情页', description: '适合展示规格、口感与品质卖点。', preview_url: styles[1].image, usage: 'detail', style: 'premium' },
+    { id: 'preview-template-3', title: '产地直采场景', category: '场景图', description: '用自然环境强化产地与真实感。', preview_url: styles[3].image, usage: 'social', style: 'farm' },
+  ]
+  helpArticles.value = [
+    { id: 'preview-help-1', category: '快速开始', question: '如何生成第一套商品素材？', answer: '确认商品信息后选择用途和风格，点击一键生成整套图片即可。' },
+    { id: 'preview-help-2', category: '支付额度', question: '额度包如何购买？', answer: '点击左侧购买额度，在弹窗中选择一次性额度包。正式环境将通过 PayPal 完成支付。' },
+    { id: 'preview-help-3', category: 'AI 服务', question: '千问生成失败怎么办？', answer: '检查 Railway Variables 中的 QWEN_API_KEY 和模型配置，并重试一次。' },
+  ]
+}
 
 const generatedCopy = computed(() => results.value.length ? (activeUsage.value === 'all' ? `已生成 ${results.value.length} 张图片` : `已生成 ${results.value.length} 张图片`) : '暂无生成记录')
 
@@ -135,7 +157,12 @@ async function loadBilling() {
 }
 
 async function openBilling() {
-  if (staticPreview) { notice.value = '静态预览模式：PayPal 额度包将在生产环境启用'; return }
+  if (staticPreview) {
+    creditPlans.value = previewPlans
+    showBilling.value = true
+    notice.value = '预览模式：可模拟购买额度包，正式环境将切换为 PayPal 支付'
+    return
+  }
   await loadBilling()
   showBilling.value = true
   await nextTick()
@@ -192,6 +219,13 @@ async function renderPaypalButtons() {
 async function purchasePlan(plan: CreditPlan) {
   billingLoading.value = true
   try {
+    if (staticPreview) {
+      await new Promise((resolve) => window.setTimeout(resolve, 350))
+      creditBalance.value += plan.credits
+      showBilling.value = false
+      notice.value = `模拟购买成功，已增加 ${plan.credits} 次额度`
+      return
+    }
     const response = await fetch(`${API_BASE}/billing/paypal/orders`, { method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ plan_code: plan.code }) })
     const data = await response.json()
     if (!response.ok) throw new Error(data.detail || 'PayPal 订单创建失败')
@@ -258,7 +292,13 @@ async function useTemplate(template: TemplateItem) {
 }
 
 async function saveProduct() {
-  if (staticPreview) { notice.value = '静态预览模式：商品会保存到真实商品库'; return }
+  if (staticPreview) {
+    const previewProduct = { ...product.value, id: product.value.id || 'preview-product-1', image_url: productImage.value }
+    product.value = previewProduct
+    products.value = [previewProduct]
+    notice.value = '预览模式：商品信息已保存在当前页面'
+    return
+  }
   const response = await fetch(product.value.id ? `${API_BASE}/products/${product.value.id}` : `${API_BASE}/products`, {
     method: product.value.id ? 'PUT' : 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(product.value),
   })
@@ -324,6 +364,16 @@ async function generate() {
   isGenerating.value = true
   notice.value = 'AI 正在根据商品信息生成整套素材…'
   try {
+    if (staticPreview) {
+      if (creditBalance.value < 1) throw new Error('生成额度不足，请购买额度包')
+      await new Promise((resolve) => window.setTimeout(resolve, 500))
+      creditBalance.value -= 1
+      results.value = results.value.map((asset) => ({ ...asset, title: asset.kind === 'main' ? product.value.name : asset.title }))
+      generations.value = [{ ...generations.value[0], assets: results.value, count: results.value.length, product_name: product.value.name, created_at: new Date().toISOString() }]
+      libraryAssets.value = results.value.map((asset, index) => ({ ...asset, id: `preview-asset-${index + 1}`, product_name: product.value.name }))
+      notice.value = `预览生成完成，已扣除 1 次额度，剩余 ${creditBalance.value} 次`
+      return
+    }
     await saveProduct()
     const response = await fetch(`${API_BASE}/generations`, {
       method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
