@@ -1,5 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+
+declare global {
+  interface Window { paypal?: any }
+}
 
 type Usage = { id: string; icon: string; title: string; desc: string }
 type StyleItem = { id: string; title: string; image: string; tag?: string }
@@ -35,6 +39,9 @@ const creditPlans = ref<CreditPlan[]>([])
 const creditBalance = ref(0)
 const showBilling = ref(false)
 const billingLoading = ref(false)
+const paypalClientId = ref('')
+const paypalCurrency = ref('USD')
+const paypalOrderIds = new Map<string, string>()
 const listLoading = ref(false)
 const listSearch = ref('')
 const helpSearch = ref('')
@@ -131,6 +138,55 @@ async function openBilling() {
   if (staticPreview) { notice.value = '静态预览模式：PayPal 额度包将在生产环境启用'; return }
   await loadBilling()
   showBilling.value = true
+  await nextTick()
+  await renderPaypalButtons()
+}
+
+async function loadPaypalSdk() {
+  const configResponse = await fetch(`${API_BASE}/billing/paypal/config`, { headers: authHeaders() })
+  if (!configResponse.ok) return false
+  const config = await configResponse.json()
+  paypalClientId.value = config.client_id || ''
+  paypalCurrency.value = config.currency || 'USD'
+  if (!paypalClientId.value || !config.enabled) return false
+  if (window.paypal) return true
+  await new Promise<void>((resolve, reject) => {
+    const script = document.createElement('script')
+    script.src = `https://www.paypal.com/sdk/js?client-id=${encodeURIComponent(paypalClientId.value)}&currency=${encodeURIComponent(paypalCurrency.value)}&intent=capture&components=buttons`
+    script.onload = () => resolve()
+    script.onerror = () => reject(new Error('PayPal SDK 加载失败'))
+    document.head.appendChild(script)
+  })
+  return Boolean(window.paypal)
+}
+
+async function renderPaypalButtons() {
+  try {
+    if (!(await loadPaypalSdk()) || !window.paypal) return
+    for (const plan of creditPlans.value) {
+      const host = document.getElementById(`paypal-button-${plan.code}`)
+      if (!host || host.dataset.rendered === 'true') continue
+      host.dataset.rendered = 'true'
+      await window.paypal.Buttons({
+        style: { layout: 'vertical', shape: 'rect', label: 'paypal', height: 38 },
+        createOrder: async () => {
+          const response = await fetch(`${API_BASE}/billing/paypal/orders`, { method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ plan_code: plan.code }) })
+          const data = await response.json()
+          if (!response.ok || !data.paypal_order_id) throw new Error(data.detail || 'PayPal 订单创建失败')
+          paypalOrderIds.set(plan.code, data.order.id)
+          return data.paypal_order_id
+        },
+        onApprove: async (data: { orderID: string }) => {
+          const localOrderId = paypalOrderIds.get(plan.code)
+          if (localOrderId) await capturePayPalOrder(localOrderId, data.orderID)
+        },
+        onCancel: () => { notice.value = '你已取消 PayPal 支付' },
+        onError: (error: unknown) => { notice.value = error instanceof Error ? error.message : 'PayPal 支付失败，请稍后重试' },
+      }).render(`#paypal-button-${plan.code}`)
+    }
+  } catch (error) {
+    notice.value = error instanceof Error ? error.message : 'PayPal 按钮加载失败'
+  }
 }
 
 async function purchasePlan(plan: CreditPlan) {
@@ -158,6 +214,7 @@ async function capturePayPalOrder(localOrderId: string, paypalOrderId: string) {
   const data = await response.json().catch(() => ({}))
   if (response.ok) {
     creditBalance.value = data.credit_balance ?? creditBalance.value
+    showBilling.value = false
     notice.value = `PayPal 支付成功，当前剩余 ${creditBalance.value} 次额度`
     window.history.replaceState({}, '', window.location.pathname)
   } else {
@@ -329,7 +386,8 @@ function downloadAll() {
         <div class="billing-grid">
           <article v-for="plan in creditPlans" :key="plan.code" class="billing-card">
             <h3>{{ plan.name }}</h3><p>{{ plan.description }}</p><strong>{{ plan.credits }} 次</strong><span>{{ plan.currency }} {{ plan.amount }}</span>
-            <button :disabled="billingLoading" @click="purchasePlan(plan)">{{ billingLoading ? '处理中…' : 'PayPal 购买' }}</button>
+            <div :id="`paypal-button-${plan.code}`" class="paypal-button-slot"></div>
+            <button v-if="!paypalClientId" :disabled="billingLoading" @click="purchasePlan(plan)">{{ billingLoading ? '处理中…' : '本地模拟购买' }}</button>
           </article>
         </div>
         <small class="billing-note">支付由 PayPal 处理，额度仅在 PayPal 支付完成后到账。</small>

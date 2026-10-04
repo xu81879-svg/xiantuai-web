@@ -8,7 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 import jwt
-from fastapi import Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -19,8 +19,8 @@ from sqlalchemy.orm import Session
 
 from fastapi import FastAPI
 from .database import Base, SessionLocal, engine, ensure_local_storage, get_db
-from .models import CreditOrder, CreditPlan, CreditTransaction, Generation, HelpArticle, Product, Template, User
-from .paypal import PayPalError, approval_url, capture_order, configured as paypal_configured, create_order as paypal_create_order, mock_mode as paypal_mock_mode
+from .models import CreditOrder, CreditPlan, CreditTransaction, Generation, HelpArticle, PayPalWebhookEvent, Product, Template, User
+from .paypal import PayPalError, approval_url, capture_order, client_id as paypal_client_id, configured as paypal_configured, create_order as paypal_create_order, mock_mode as paypal_mock_mode, show_order, verify_webhook_signature
 from .qwen import QwenError, allow_mock_fallback, generate_image, is_qwen_configured, persist_remote_image, recognize_product as qwen_recognize_product
 from .security import create_access_token, hash_password, read_user_id, secret_key, verify_password
 
@@ -213,6 +213,10 @@ def billing_plans(user: User = Depends(current_user), db: Session = Depends(get_
     plans = db.scalars(select(CreditPlan).where(CreditPlan.is_active.is_(True)).order_by(CreditPlan.sort_order)).all()
     return {"items": [serialize_plan(plan) for plan in plans], "credit_balance": user.credit_balance}
 
+@app.get("/api/billing/paypal/config")
+def paypal_config(user: User = Depends(current_user)) -> dict[str, Any]:
+    return {"client_id": paypal_client_id(), "currency": os.getenv("PAYPAL_CURRENCY", "USD"), "enabled": bool(paypal_client_id() and paypal_configured())}
+
 @app.get("/api/billing/me")
 def billing_me(user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     orders = db.scalars(select(CreditOrder).where(CreditOrder.user_id == user.id).order_by(CreditOrder.created_at.desc()).limit(20)).all()
@@ -241,14 +245,14 @@ def create_paypal_order(payload: CreditOrderPayload, user: User = Depends(curren
         paypal_order = paypal_create_order(local_order_id=order.id, plan_name=plan.name, amount=plan.amount, currency=plan.currency, return_url=f"{public_url}/?paypal_order_id={order.id}", cancel_url=f"{public_url}/?paypal_cancelled=1")
         order.provider_order_id = paypal_order.get("id")
         db.commit()
-        return {"order": serialize_order(order), "approval_url": approval_url(paypal_order), "demo": False}
+        return {"order": serialize_order(order), "paypal_order_id": order.provider_order_id, "approval_url": approval_url(paypal_order), "demo": False}
     except PayPalError as exc:
         db.rollback()
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 @app.post("/api/billing/paypal/orders/{order_id}/capture")
 def capture_paypal_order(order_id: str, payload: CreditCapturePayload, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
-    order = db.scalar(select(CreditOrder).where(CreditOrder.id == order_id, CreditOrder.user_id == user.id))
+    order = db.scalar(select(CreditOrder).where(CreditOrder.id == order_id, CreditOrder.user_id == user.id).with_for_update())
     if not order:
         raise HTTPException(status_code=404, detail="订单不存在")
     if order.status == "completed":
@@ -262,18 +266,73 @@ def capture_paypal_order(order_id: str, payload: CreditCapturePayload, user: Use
     try:
         result = capture_order(payload.paypal_order_id)
     except PayPalError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        # The browser may have lost the response after PayPal captured funds.
+        # Query the authoritative order state before reporting a failure.
+        try:
+            result = show_order(payload.paypal_order_id)
+        except PayPalError:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
     if result.get("status") != "COMPLETED":
         order.status = "failed"
         db.commit()
         raise HTTPException(status_code=402, detail="PayPal 支付尚未完成")
-    capture = ((result.get("purchase_units") or [{}])[0].get("payments") or {}).get("captures") or [{}]
+    purchase_unit = (result.get("purchase_units") or [{}])[0]
+    if purchase_unit.get("custom_id") not in {None, order.id} and purchase_unit.get("reference_id") != order.id:
+        raise HTTPException(status_code=400, detail="PayPal 订单归属校验失败")
+    paypal_amount = (purchase_unit.get("amount") or {})
+    if paypal_amount and (paypal_amount.get("currency_code") != order.currency or str(paypal_amount.get("value")) != order.amount):
+        raise HTTPException(status_code=400, detail="PayPal 金额校验失败")
+    capture = (purchase_unit.get("payments") or {}).get("captures") or [{}]
     capture_status = capture[0].get("status")
     if capture_status != "COMPLETED":
         raise HTTPException(status_code=402, detail="PayPal 扣款未完成")
     complete_credit_order(db, order, user)
     db.commit()
     return {"order": serialize_order(order), "credit_balance": user.credit_balance, "demo": False}
+
+@app.post("/api/webhooks/paypal")
+async def paypal_webhook(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
+    event = await request.json()
+    headers = request.headers
+    try:
+        verified = verify_webhook_signature(
+            event=event,
+            transmission_id=headers.get("paypal-transmission-id", ""),
+            transmission_time=headers.get("paypal-transmission-time", ""),
+            cert_url=headers.get("paypal-cert-url", ""),
+            auth_algo=headers.get("paypal-auth-algo", ""),
+            transmission_sig=headers.get("paypal-transmission-sig", ""),
+        )
+    except PayPalError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if not verified:
+        raise HTTPException(status_code=400, detail="PayPal Webhook 验签失败")
+    event_id = event.get("id")
+    event_type = event.get("event_type", "")
+    if not event_id:
+        raise HTTPException(status_code=400, detail="PayPal Webhook 缺少事件 ID")
+    previous = db.get(PayPalWebhookEvent, event_id)
+    if previous and previous.processed:
+        return {"received": True, "duplicate": True}
+    if not previous:
+        previous = PayPalWebhookEvent(id=event_id, event_type=event_type, processed=False)
+        db.add(previous)
+        db.flush()
+    if event_type == "PAYMENT.CAPTURE.COMPLETED":
+        resource = event.get("resource") or {}
+        related_ids = ((resource.get("supplementary_data") or {}).get("related_ids") or {})
+        provider_order_id = related_ids.get("order_id") or resource.get("custom_id")
+        order = db.scalar(select(CreditOrder).where(CreditOrder.provider_order_id == provider_order_id).with_for_update()) if provider_order_id else None
+        if order and order.status != "completed":
+            amount = resource.get("amount") or {}
+            if amount and (amount.get("currency_code") != order.currency or str(amount.get("value")) != order.amount):
+                raise HTTPException(status_code=400, detail="PayPal Webhook 金额校验失败")
+            webhook_user = db.get(User, order.user_id)
+            if webhook_user:
+                complete_credit_order(db, order, webhook_user)
+    previous.processed = True
+    db.commit()
+    return {"received": True, "event_id": event_id, "processed": event_type == "PAYMENT.CAPTURE.COMPLETED"}
 
 @app.post("/api/products/recognize")
 async def recognize_product(file: UploadFile = File(...), user: User = Depends(current_user)) -> dict[str, Any]:

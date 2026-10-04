@@ -22,6 +22,10 @@ def configured() -> bool:
     return bool(_env("PAYPAL_CLIENT_ID") and _env("PAYPAL_CLIENT_SECRET"))
 
 
+def client_id() -> str:
+    return _env("PAYPAL_CLIENT_ID")
+
+
 def mock_mode() -> bool:
     return _env("PAYPAL_MOCK_MODE", "false").lower() == "true"
 
@@ -88,6 +92,45 @@ def capture_order(paypal_order_id: str) -> dict[str, Any]:
         return response.json()
     except (httpx.HTTPError, ValueError) as exc:
         raise PayPalError(f"PayPal order capture failed: {exc}") from exc
+
+
+def show_order(paypal_order_id: str) -> dict[str, Any]:
+    try:
+        response = httpx.get(
+            f"{base_url()}/v2/checkout/orders/{paypal_order_id}",
+            headers={"Authorization": f"Bearer {_access_token()}", "Content-Type": "application/json"},
+            timeout=float(_env("PAYPAL_TIMEOUT_SECONDS", "20")),
+        )
+        response.raise_for_status()
+        return response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise PayPalError(f"PayPal order lookup failed: {exc}") from exc
+
+
+def verify_webhook_signature(*, event: dict[str, Any], transmission_id: str, transmission_time: str, cert_url: str, auth_algo: str, transmission_sig: str) -> bool:
+    webhook_id = _env("PAYPAL_WEBHOOK_ID")
+    if not webhook_id or not configured():
+        return False
+    payload = {
+        "transmission_id": transmission_id,
+        "transmission_time": transmission_time,
+        "cert_url": cert_url,
+        "auth_algo": auth_algo,
+        "transmission_sig": transmission_sig,
+        "webhook_id": webhook_id,
+        "webhook_event": event,
+    }
+    try:
+        response = httpx.post(
+            f"{base_url()}/v1/notifications/verify-webhook-signature",
+            headers={"Authorization": f"Bearer {_access_token()}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=float(_env("PAYPAL_TIMEOUT_SECONDS", "20")),
+        )
+        response.raise_for_status()
+        return response.json().get("verification_status") == "SUCCESS"
+    except (httpx.HTTPError, ValueError) as exc:
+        raise PayPalError(f"PayPal webhook verification failed: {exc}") from exc
 
 
 def approval_url(order: dict[str, Any]) -> str | None:
