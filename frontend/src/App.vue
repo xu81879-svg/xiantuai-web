@@ -5,6 +5,9 @@ type Usage = { id: string; icon: string; title: string; desc: string }
 type StyleItem = { id: string; title: string; image: string; tag?: string }
 type Result = { id?: string; title: string; badge: string; image: string; kind: string; product_name?: string; created_at?: string }
 type Product = { id?: string; name: string; origin: string; spec: string; tags: string[]; image_url?: string | null; created_at?: string; updated_at?: string }
+type Generation = { id: string; status: string; usage: string; style: string; count: number; assets: Result[]; product_id?: string | null; product_name?: string | null; created_at?: string }
+type TemplateItem = { id: string; title: string; category: string; description: string; preview_url: string; usage: string; style: string }
+type HelpItem = { id: string; category: string; question: string; answer: string }
 
 const API_BASE = '/api'
 const staticPreview = import.meta.env.VITE_STATIC_PREVIEW === 'true'
@@ -22,8 +25,12 @@ const isGenerating = ref(false)
 const notice = ref('')
 const products = ref<Product[]>([])
 const libraryAssets = ref<Result[]>([])
+const generations = ref<Generation[]>([])
+const templates = ref<TemplateItem[]>([])
+const helpArticles = ref<HelpItem[]>([])
 const listLoading = ref(false)
 const listSearch = ref('')
+const helpSearch = ref('')
 const fileInput = ref<HTMLInputElement | null>(null)
 const productImage = ref('https://images.unsplash.com/photo-1528825871115-3581a5387919?auto=format&fit=crop&w=680&q=85')
 const product = ref<Product>({ name: '崂山大樱桃', origin: '山东·青岛崂山', spec: '500g', tags: ['果大', '脆甜', '新鲜', '当季'] })
@@ -45,15 +52,15 @@ const styles: StyleItem[] = [
   { id: 'sale', title: '促销活动', image: 'https://images.unsplash.com/photo-1577003833619-76bbd7f82948?auto=format&fit=crop&w=260&q=80' },
 ]
 
-const results = ref<Result[]>([
+const results = ref<Result[]>(staticPreview ? [
   { title: '崂山大樱桃', badge: '电商主图', kind: 'main', image: 'https://images.unsplash.com/photo-1528825871115-3581a5387919?auto=format&fit=crop&w=900&q=88' },
   { title: '甜蜜多汁 · 一口爆甜', badge: '详情页卖点', kind: 'detail', image: 'https://images.unsplash.com/photo-1528825871115-3581a5387919?auto=format&fit=crop&w=550&q=88' },
   { title: '源自崂山 · 自然成熟', badge: '场景图', kind: 'scene', image: 'https://images.unsplash.com/photo-1471943311424-646960669fbc?auto=format&fit=crop&w=550&q=88' },
   { title: '新鲜大樱桃 · 限时特惠', badge: '促销活动', kind: 'sale', image: 'https://images.unsplash.com/photo-1577003833619-76bbd7f82948?auto=format&fit=crop&w=550&q=88' },
   { title: '把新鲜带回家', badge: '朋友圈分享', kind: 'share', image: 'https://images.unsplash.com/photo-1518977676601-b53f82aba655?auto=format&fit=crop&w=550&q=88' },
-])
+] : [])
 
-const generatedCopy = computed(() => activeUsage.value === 'all' ? '已生成 5 张图片' : `已生成 ${results.value.length} 张图片`)
+const generatedCopy = computed(() => results.value.length ? (activeUsage.value === 'all' ? `已生成 ${results.value.length} 张图片` : `已生成 ${results.value.length} 张图片`) : '暂无生成记录')
 
 function authHeaders(extra: HeadersInit = {}): HeadersInit {
   return authToken.value ? { Authorization: `Bearer ${authToken.value}`, ...extra } : extra
@@ -70,6 +77,7 @@ async function submitAuth() {
     authToken.value = data.access_token
     localStorage.setItem('xiantu_token', data.access_token)
     authenticated.value = true
+    await loadWorkspaceData()
     notice.value = '登录成功，欢迎回来'
   } catch (error) {
     authError.value = error instanceof Error ? error.message : '操作失败，请稍后重试'
@@ -99,20 +107,36 @@ async function loadWorkspaceData() {
   if (staticPreview || !authToken.value) return
   listLoading.value = true
   try {
-    const [productsResponse, assetsResponse] = await Promise.all([
+    const [productsResponse, assetsResponse, generationsResponse, templatesResponse, helpResponse] = await Promise.all([
       fetch(`${API_BASE}/products?q=${encodeURIComponent(listSearch.value)}`, { headers: authHeaders() }),
       fetch(`${API_BASE}/assets?q=${encodeURIComponent(listSearch.value)}`, { headers: authHeaders() }),
+      fetch(`${API_BASE}/generations`, { headers: authHeaders() }),
+      fetch(`${API_BASE}/templates`, { headers: authHeaders() }),
+      fetch(`${API_BASE}/help?q=${encodeURIComponent(helpSearch.value)}`, { headers: authHeaders() }),
     ])
     if (productsResponse.ok) products.value = (await productsResponse.json()).items ?? []
     if (assetsResponse.ok) libraryAssets.value = (await assetsResponse.json()).items ?? []
+    if (generationsResponse.ok) {
+      generations.value = (await generationsResponse.json()).items ?? []
+      if (!staticPreview && !results.value.length && generations.value[0]?.assets?.length) results.value = generations.value[0].assets
+    }
+    if (templatesResponse.ok) templates.value = (await templatesResponse.json()).items ?? []
+    if (helpResponse.ok) helpArticles.value = (await helpResponse.json()).items ?? []
   } finally {
     listLoading.value = false
   }
 }
 
 watch(activeNav, async (value) => {
-  if (value === '我的商品' || value === '素材库' || value === '生成记录') await loadWorkspaceData()
+  if (value === '我的商品' || value === '我的产品' || value === '素材库' || value === '生成记录' || value === '模板中心' || value === '帮助中心') await loadWorkspaceData()
 })
+
+async function useTemplate(template: TemplateItem) {
+  activeUsage.value = template.usage
+  activeStyle.value = template.style
+  activeNav.value = '首页'
+  notice.value = `已应用模板「${template.title}」`
+}
 
 async function saveProduct() {
   if (staticPreview) { notice.value = '静态预览模式：商品会保存到真实商品库'; return }
@@ -247,7 +271,7 @@ function downloadAll() {
     <div class="body-layout">
       <aside class="sidebar">
         <div class="side-menu">
-          <button v-for="item in [{icon:'⌂',label:'首页'}, {icon:'▤',label:'我的商品'}, {icon:'▧',label:'素材库'}, {icon:'▢',label:'生成记录'}, {icon:'▣',label:'模板中心'}, {icon:'?',label:'帮助中心'}]" :key="item.label" :class="{ selected: activeNav === item.label || (activeNav === '首页' && item.label === '首页') }" @click="activeNav = item.label; notice = item.label === '帮助中心' ? '帮助中心即将上线，先从工作台开始吧' : ''"><span>{{ item.icon }}</span>{{ item.label }}</button>
+          <button v-for="item in [{icon:'⌂',label:'首页'}, {icon:'▤',label:'我的商品'}, {icon:'▧',label:'素材库'}, {icon:'▢',label:'生成记录'}, {icon:'▣',label:'模板中心'}, {icon:'?',label:'帮助中心'}]" :key="item.label" :class="{ selected: activeNav === item.label || (activeNav === '首页' && item.label === '首页') }" @click="activeNav = item.label; notice = ''"><span>{{ item.icon }}</span>{{ item.label }}</button>
         </div>
         <div class="upgrade-card">
           <div class="crown">♛</div><strong>会员升级</strong>
@@ -273,8 +297,20 @@ function downloadAll() {
         </section>
         <section v-else-if="activeNav === '生成记录'" class="data-page">
           <div class="data-page-header"><div><span class="eyebrow">GENERATION HISTORY</span><h1>生成记录</h1><p>每次生成的用途、风格和素材数量都会保存在账户中。</p></div><button class="primary-small" @click="activeNav = '首页'">继续生成</button></div>
-          <div class="history-note">生成记录 API 已与素材库共用真实数据库；完成生成后刷新即可看到最新记录。</div>
-          <button class="primary-small" @click="loadWorkspaceData">刷新数据</button>
+          <div v-if="generations.length" class="history-list"><article v-for="item in generations" :key="item.id" class="history-card"><div class="history-thumb"><img v-if="item.assets?.[0]?.image" :src="item.assets[0].image" alt="生成记录" /><span v-else>✦</span></div><div class="history-copy"><h3>{{ item.product_name || '未命名商品' }}</h3><p>{{ item.usage }} · {{ item.style }} · {{ item.count }} 张素材</p><small>{{ item.created_at ? new Date(item.created_at).toLocaleString('zh-CN') : '刚刚' }}</small></div><button class="list-actions-button" @click="results = item.assets; activeNav = '首页'">查看结果</button></article></div>
+          <div v-else class="empty-state"><div>◷</div><h3>还没有生成记录</h3><p>完成一次千问生成后，记录会自动出现在这里。</p><button class="primary-small" @click="activeNav = '首页'">开始生成</button></div>
+          <button v-if="generations.length" class="secondary-refresh" @click="loadWorkspaceData">刷新数据</button>
+        </section>
+        <section v-else-if="activeNav === '模板中心'" class="data-page">
+          <div class="data-page-header"><div><span class="eyebrow">TEMPLATE CENTER</span><h1>模板中心</h1><p>从真实模板库选择用途和风格，应用后回到首页生成。</p></div><span class="data-count">共 {{ templates.length }} 个模板</span></div>
+          <div v-if="templates.length" class="template-grid"><article v-for="template in templates" :key="template.id" class="template-card"><div class="template-preview"><img :src="template.preview_url" :alt="template.title" /><span>{{ template.category }}</span></div><div class="template-copy"><h3>{{ template.title }}</h3><p>{{ template.description }}</p><button class="primary-small" @click="useTemplate(template)">应用模板</button></div></article></div>
+          <div v-else class="empty-state"><div>▱</div><h3>模板库为空</h3><p>请先完成数据库迁移，或联系管理员添加模板。</p></div>
+        </section>
+        <section v-else-if="activeNav === '帮助中心'" class="data-page">
+          <div class="data-page-header"><div><span class="eyebrow">HELP CENTER</span><h1>帮助中心</h1><p>从真实帮助文章中搜索商品识别、千问生成和账户数据问题。</p></div></div>
+          <div class="data-toolbar"><input v-model="helpSearch" placeholder="搜索问题或关键词" @keyup.enter="loadWorkspaceData" /><button @click="loadWorkspaceData">搜索</button><span>共 {{ helpArticles.length }} 篇文章</span></div>
+          <div v-if="helpArticles.length" class="help-list"><article v-for="article in helpArticles" :key="article.id" class="help-card"><span>{{ article.category }}</span><h3>{{ article.question }}</h3><p>{{ article.answer }}</p></article></div>
+          <div v-else class="empty-state"><div>?</div><h3>没有匹配的帮助文章</h3><p>尝试更换关键词。</p></div>
         </section>
         <template v-else>
         <section class="hero-banner">
@@ -306,7 +342,8 @@ function downloadAll() {
 
           <section class="panel result-panel">
             <div class="result-header"><div class="step-title compact"><span class="sparkle">✦</span><div><b>生成结果</b><small>{{ generatedCopy }}</small></div></div><button class="refresh" @click="generate">⟳　重新生成</button></div>
-            <div class="result-grid"><article v-for="asset in results" :key="asset.title" class="result-card" :class="asset.kind"><img :src="asset.image" alt="生成结果" /><div class="result-overlay"><span>{{ asset.badge }}</span><button @click="downloadAsset(asset)">↓</button></div><strong v-if="asset.kind === 'main'">{{ product.name }}</strong><small v-if="asset.kind === 'main'">果大 · 脆甜 · 新鲜</small></article></div>
+            <div v-if="results.length" class="result-grid"><article v-for="asset in results" :key="asset.id || asset.title" class="result-card" :class="asset.kind"><img :src="asset.image" alt="生成结果" /><div class="result-overlay"><span>{{ asset.badge }}</span><button @click="downloadAsset(asset)">↓</button></div><strong v-if="asset.kind === 'main'">{{ product.name }}</strong><small v-if="asset.kind === 'main'">{{ product.tags.join(' · ') }}</small></article></div>
+            <div v-else class="result-empty"><span>✦</span><b>还没有生成结果</b><small>选择用途和风格后，点击一键生成整套图片</small></div>
             <div class="result-footer"><span>●　已为你生成 {{ results.length }} 张高质量图片，包含多种使用场景</span><button @click="downloadAll">⇩　下载整套素材</button></div>
           </section>
         </div>

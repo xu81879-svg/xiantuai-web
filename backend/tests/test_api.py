@@ -24,7 +24,14 @@ def test_auth_and_generation_flow():
         generation = client.post("/api/generations", headers=headers, json={"product": {"name": "测试樱桃", "origin": "山东", "spec": "500g", "tags": ["新鲜"]}, "usage": "hero", "style": "natural"})
         assert generation.status_code == 200
         assert len(generation.json()["assets"]) == 5
-        assert client.get("/api/generations", headers=headers).json()["items"]
+        generation_items = client.get("/api/generations", headers=headers).json()["items"]
+        assert generation_items and len(generation_items[0]["assets"]) == 5
+        templates = client.get("/api/templates", headers=headers)
+        assert templates.status_code == 200
+        assert templates.json()["total"] >= 1
+        help_articles = client.get("/api/help?q=千问", headers=headers)
+        assert help_articles.status_code == 200
+        assert help_articles.json()["total"] >= 1
         product_id = generation.json()["product"]["id"]
         products = client.get("/api/products?q=测试", headers=headers)
         assert products.status_code == 200

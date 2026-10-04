@@ -61,3 +61,30 @@ class Generation(Base):
 
     owner: Mapped[User] = relationship(back_populates="generations")
     product: Mapped[Product | None] = relationship(back_populates="generations")
+
+
+class Template(Base):
+    __tablename__ = "templates"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    title: Mapped[str] = mapped_column(String(120))
+    category: Mapped[str] = mapped_column(String(40), default="电商")
+    description: Mapped[str] = mapped_column(String(255), default="")
+    preview_url: Mapped[str] = mapped_column(Text)
+    usage: Mapped[str] = mapped_column(String(40), default="hero")
+    style: Mapped[str] = mapped_column(String(40), default="natural")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
+class HelpArticle(Base):
+    __tablename__ = "help_articles"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    category: Mapped[str] = mapped_column(String(40), default="使用指南")
+    question: Mapped[str] = mapped_column(String(255))
+    answer: Mapped[str] = mapped_column(Text)
+    is_published: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)

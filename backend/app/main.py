@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from fastapi import FastAPI
 from .database import Base, SessionLocal, engine, ensure_local_storage, get_db
-from .models import Generation, Product, User
+from .models import Generation, HelpArticle, Product, Template, User
 from .qwen import QwenError, allow_mock_fallback, generate_image, is_qwen_configured, persist_remote_image, recognize_product as qwen_recognize_product
 from .security import create_access_token, hash_password, read_user_id, secret_key, verify_password
 
@@ -98,14 +98,35 @@ def make_assets(product_name: str, primary_image: str | None = None) -> list[dic
     images = [primary_image or ASSET_IMAGES[0], *ASSET_IMAGES[1:]]
     return [{"title": title, "badge": badge, "kind": kind, "image": image} for title, badge, kind, image in zip(titles, badges, kinds, images)]
 
+
+def seed_catalog(db: Session) -> None:
+    if not db.scalar(select(Template.id)):
+        db.add_all([
+            Template(id="fresh-main", title="自然生鲜主图", category="电商主图", description="突出新鲜质感与商品主体，适合商品首图。", preview_url=ASSET_IMAGES[0], usage="hero", style="natural", sort_order=10),
+            Template(id="premium-detail", title="精品详情卖点", category="详情页", description="适合展示规格、口感与品质卖点。", preview_url=ASSET_IMAGES[1], usage="detail", style="premium", sort_order=20),
+            Template(id="farm-scene", title="产地直采场景", category="场景图", description="用自然环境强化产地与真实感。", preview_url=ASSET_IMAGES[2], usage="social", style="farm", sort_order=30),
+            Template(id="festival-sale", title="节日促销活动", category="活动营销", description="适合节日、限时特惠和活动海报。", preview_url=ASSET_IMAGES[3], usage="promo", style="sale", sort_order=40),
+            Template(id="xiaohongshu", title="清新种草笔记", category="社交媒体", description="适合小红书和朋友圈的生活方式内容。", preview_url=ASSET_IMAGES[4], usage="share", style="japanese", sort_order=50),
+        ])
+    if not db.scalar(select(HelpArticle.id)):
+        db.add_all([
+            HelpArticle(id="getting-started", category="快速开始", question="如何生成第一套商品素材？", answer="登录后上传商品图片，确认商品名称、产地和规格，选择图片用途与风格，点击一键生成整套图片。", sort_order=10),
+            HelpArticle(id="recognition", category="商品识别", question="商品图片识别支持哪些格式？", answer="当前支持 JPG、JPEG、PNG 和 WEBP。配置千问 API Key 后，系统会使用 Qwen-VL 识别商品信息。", sort_order=20),
+            HelpArticle(id="generation", category="生成素材", question="生成的图片保存在哪里？", answer="生成记录会保存到数据库，图片会保存到应用上传目录。Railway 上线时请为 /app/data 配置 Volume。", sort_order=30),
+            HelpArticle(id="qwen", category="AI 服务", question="如何配置千问 API？", answer="在 Railway Variables 配置 QWEN_API_KEY、QWEN_BASE_URL、QWEN_IMAGE_BASE_URL 和模型名称。", sort_order=40),
+            HelpArticle(id="account", category="账户与数据", question="商品和素材是否按商家隔离？", answer="是。商品、生成记录和素材查询均按当前登录用户隔离。", sort_order=50),
+        ])
+    db.commit()
+
 @app.on_event("startup")
 def startup() -> None:
     ensure_local_storage()
     secret_key()
     if os.getenv("AUTO_CREATE_SCHEMA", "true").lower() == "true":
         Base.metadata.create_all(bind=engine)
-    if os.getenv("SEED_DEMO_USER", "true").lower() == "true":
-        with SessionLocal() as db:
+    with SessionLocal() as db:
+        seed_catalog(db)
+        if os.getenv("SEED_DEMO_USER", "true").lower() == "true":
             if not db.scalar(select(User).where(User.email == "demo@xiantu.ai")):
                 db.add(User(email="demo@xiantu.ai", password_hash=hash_password("Demo123456!"), display_name="演示商家"))
                 db.commit()
@@ -233,7 +254,7 @@ def create_generation(payload: GenerationPayload, user: User = Depends(current_u
 @app.get("/api/generations")
 def list_generations(user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     items = db.scalars(select(Generation).where(Generation.owner_id == user.id).order_by(Generation.created_at.desc())).all()
-    return {"items": [{"id": item.id, "status": item.status, "usage": item.usage, "style": item.style, "count": len(item.assets or []), "created_at": item.created_at.isoformat() if item.created_at else None} for item in items]}
+    return {"items": [{"id": item.id, "status": item.status, "usage": item.usage, "style": item.style, "count": len(item.assets or []), "assets": item.assets or [], "product_id": item.product_id, "product_name": item.product.name if item.product else None, "created_at": item.created_at.isoformat() if item.created_at else None} for item in items]}
 
 @app.get("/api/assets")
 def list_assets(q: str | None = Query(default=None, max_length=80), limit: int = Query(default=100, ge=1, le=200), offset: int = Query(default=0, ge=0), user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
@@ -246,6 +267,24 @@ def list_assets(q: str | None = Query(default=None, max_length=80), limit: int =
             if not q or q.strip().lower() in f"{item.get('title', '')} {item.get('badge', '')} {item.get('product_name', '')}".lower():
                 items.append(item)
     return {"items": items[offset:offset + limit], "total": len(items), "limit": limit, "offset": offset}
+
+@app.get("/api/templates")
+def list_templates(q: str | None = Query(default=None, max_length=80), user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+    statement = select(Template).where(Template.is_active.is_(True)).order_by(Template.sort_order.asc())
+    if q and q.strip():
+        term = f"%{q.strip()}%"
+        statement = statement.where(Template.title.ilike(term) | Template.category.ilike(term) | Template.description.ilike(term))
+    items = db.scalars(statement).all()
+    return {"items": [{"id": item.id, "title": item.title, "category": item.category, "description": item.description, "preview_url": item.preview_url, "usage": item.usage, "style": item.style} for item in items], "total": len(items)}
+
+@app.get("/api/help")
+def list_help(q: str | None = Query(default=None, max_length=80), user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+    statement = select(HelpArticle).where(HelpArticle.is_published.is_(True)).order_by(HelpArticle.sort_order.asc())
+    if q and q.strip():
+        term = f"%{q.strip()}%"
+        statement = statement.where(HelpArticle.question.ilike(term) | HelpArticle.answer.ilike(term) | HelpArticle.category.ilike(term))
+    items = db.scalars(statement).all()
+    return {"items": [{"id": item.id, "category": item.category, "question": item.question, "answer": item.answer} for item in items], "total": len(items)}
 
 # Production static serving: the Docker build copies frontend/dist here.
 STATIC_DIR = PROJECT_DIR / "static"
