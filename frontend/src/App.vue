@@ -446,7 +446,8 @@ function downloadAll() {
           <article v-for="plan in creditPlans" :key="plan.code" class="billing-card">
             <h3>{{ plan.name }}</h3><p>{{ plan.description }}</p><strong>{{ plan.credits }} 次</strong><span>{{ plan.currency }} {{ plan.amount }}</span>
             <div :id="`paypal-button-${plan.code}`" class="paypal-button-slot"></div>
-            <button v-if="!paypalClientId" :disabled="billingLoading" @click="purchasePlan(plan)">{{ billingLoading ? '处理中…' : '本地模拟购买' }}</button>
+            <button v-if="staticPreview && !paypalClientId" :disabled="billingLoading" @click="purchasePlan(plan)">{{ billingLoading ? '处理中…' : '本地模拟购买' }}</button>
+            <small v-else-if="!paypalClientId" class="paypal-unavailable">PayPal 尚未启用，请联系管理员</small>
           </article>
         </div>
         <small class="billing-note">支付由 PayPal 处理，额度仅在 PayPal 支付完成后到账。</small>

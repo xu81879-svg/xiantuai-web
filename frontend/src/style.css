@@ -17,3 +17,4 @@
 
 /* Personalized generation controls */
 .personalization{margin-top:17px;border-top:1px solid #edf1ee;padding-top:14px}.personalization-title{display:flex;justify-content:space-between;align-items:center;color:#35483b;font-size:11px;font-weight:700;margin-bottom:9px}.personalization-title small{color:#9ca7a0;font-weight:400;font-size:9px}.parameter-group{margin:8px 0}.parameter-group>span{display:block;color:#89958e;font-size:9px;margin-bottom:5px}.parameter-options{display:flex;gap:5px;flex-wrap:wrap}.parameter-options button{border:1px solid #e1e9e4;background:#fbfdfb;color:#68766d;border-radius:5px;padding:5px 7px;font-size:9px}.parameter-options button.chosen{border-color:#1aa966;background:#effaf4;color:#138d55;font-weight:700}
+.paypal-unavailable{display:block;margin-top:10px;color:#b17835;background:#fff8e9;border-radius:5px;padding:7px 6px;text-align:center;font-size:10px}
