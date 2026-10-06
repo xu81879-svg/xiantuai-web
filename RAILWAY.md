@@ -103,6 +103,23 @@ RAILWAY_CHECK_PASSWORD='你的密码' \
 
 线上检查可以确认 `/readyz`、`/api/health` 以及登录后的 `/api/billing/paypal/config`；它不能直接读取 Railway Secret 原文，只能根据应用运行时返回的 `enabled` 状态判断 PayPal 凭据是否生效。
 
+连接 Railway 之前，可以使用 `scripts/check_railway_local.py` 在本地预检 env 文件格式、未解析的 Railway 引用、生产 SQLite 回退、PostgreSQL URL 和 SQLAlchemy 连接池配置。脚本不会访问 Railway、不会建立数据库连接，也不会输出密码或连接串：
+
+```bash
+python3 scripts/check_railway_local.py --file railway.env
+```
+
+也可以检查当前进程环境变量：
+
+```bash
+DATABASE_URL='"postgresql://user:password@host/db"' \
+ENVIRONMENT=production PGSSLMODE=require \
+AUTO_CREATE_SCHEMA=false SEED_DEMO_USER=false \
+python3 scripts/check_railway_local.py --allow-missing-file
+```
+
+预检通过后，再使用 Railway Dashboard 的 **Add Reference** 或 Railway CLI 绑定真实 `DATABASE_URL`。示例中的数据库 URL 只用于格式演示，不要提交真实凭据。
+
 完整上线烟雾测试：
 
 ```bash
