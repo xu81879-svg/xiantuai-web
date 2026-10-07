@@ -33,6 +33,7 @@ const activeComposition = ref('center')
 const activeBackground = ref('clean')
 const activePlatform = ref('taobao')
 const isGenerating = ref(false)
+const isRecognizing = ref(false)
 const notice = ref('')
 const products = ref<Product[]>([])
 const libraryAssets = ref<Result[]>([])
@@ -339,10 +340,12 @@ function toggleTag(tag: string) {
 }
 
 function triggerUpload() {
+  if (isRecognizing.value) return
   fileInput.value?.click()
 }
 
 function handleFile(event: Event) {
+  if (isRecognizing.value) return
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   if (!file) return
@@ -352,6 +355,9 @@ function handleFile(event: Event) {
 }
 
 async function recognize(file: File) {
+  if (isRecognizing.value) return
+  isRecognizing.value = true
+  notice.value = '图片已上传，AI 正在识别商品信息…'
   try {
     const form = new FormData()
     form.append('file', file)
@@ -365,6 +371,8 @@ async function recognize(file: File) {
     notice.value = 'AI 已识别商品信息，你可以继续编辑'
   } catch (error) {
     notice.value = staticPreview ? '静态预览模式：这里会连接真实 AI 识别服务' : (error instanceof Error ? error.message : '图片识别失败，请稍后重试')
+  } finally {
+    isRecognizing.value = false
   }
 }
 
@@ -517,14 +525,14 @@ function downloadAll() {
         <div class="workspace-grid">
           <section class="panel product-panel">
             <div class="step-title"><span>1</span><div><b>选择商品</b><small>上传商品图片或从素材库选择</small></div></div>
-            <div class="product-card"><div class="product-thumb"><img :src="productImage" alt="商品图片" /><button class="remove">×</button></div><div class="product-summary"><b>{{ product.name }}</b><span>{{ product.spec }} / 精品装</span><button class="outline-btn" @click="triggerUpload">↥　更换图片</button></div></div>
+            <div class="product-card"><div class="product-thumb"><img :src="productImage" alt="商品图片" /><button class="remove" :disabled="isRecognizing">×</button></div><div class="product-summary"><b>{{ product.name }}</b><span>{{ product.spec }} / 精品装</span><button class="outline-btn" :disabled="isRecognizing" @click="triggerUpload">{{ isRecognizing ? '✦ AI 识别中…' : '↥　更换图片' }}</button></div></div>
             <input ref="fileInput" type="file" accept="image/*" hidden @change="handleFile" />
             <div class="section-label">商品信息 <small>（AI自动识别，可编辑）</small></div>
             <label class="field"><span>商品名称</span><input v-model="product.name" maxlength="30" /><i>{{ product.name.length }}/30</i></label>
             <div class="field tag-field"><span>卖点标签</span><div class="tags"><button v-for="tag in ['果大','脆甜','新鲜','当季']" :key="tag" :class="{ chosen: product.tags.includes(tag) }" @click="toggleTag(tag)">{{ tag }}</button><button class="plus" @click="product.tags.push('精选')">＋</button></div></div>
             <label class="field"><span>产地</span><input v-model="product.origin" /></label>
             <label class="field"><span>规格</span><input v-model="product.spec" /></label>
-            <div class="ai-hint">♧　AI 已智能识别商品信息，您也可以手动修改<br /><small>让图片更符合你的需求。</small></div>
+            <div class="ai-hint" :class="{ recognizing: isRecognizing }">{{ isRecognizing ? '✦　AI 正在分析图片，请稍候…' : '♧　AI 已智能识别商品信息，您也可以手动修改' }}<br /><small>{{ isRecognizing ? '通常需要 5 秒左右，完成后可继续编辑。' : '让图片更符合你的需求。' }}</small></div>
             <button class="save-product-btn" @click="saveProduct">保存商品信息</button>
           </section>
 
