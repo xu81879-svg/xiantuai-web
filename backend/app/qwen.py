@@ -185,11 +185,26 @@ def recognize_product(image_path: Path, suffix: str) -> dict[str, Any]:
 
 def generate_image(product_name: str, origin: str, spec: str, usage: str, style: str, tone: str = "fresh", composition: str = "center", background: str = "clean", platform: str = "taobao") -> str:
     """Use Qwen-Image through DashScope's native synchronous generation endpoint."""
+    layout_by_usage = {
+        "hero": "电商主图：商品占画面约 65%，主体完整且有呼吸感，右侧或右上保留干净文字安全区",
+        "detail": "详情页卖点图：以食材质感和局部细节为主，文字只做小型信息标注，不要堆叠段落",
+        "promo": "活动素材：保持高级留白，促销信息仅作为小面积辅助层，不使用夸张爆炸贴和满版大字",
+        "social": "社交媒体种草图：生活方式场景为主，文字轻量、克制、像杂志标题",
+        "share": "朋友圈分享图：自然真实的商品场景，最多一组简短标题，避免广告传单感",
+        "all": "整套素材中的主视觉：统一品牌摄影风格，画面简洁，信息分层而不是文字堆叠",
+    }
+    layout_direction = layout_by_usage.get(usage, layout_by_usage["hero"])
+    product_facts = [fact for fact in (product_name, origin, spec) if fact]
+    fact_text = "；".join(product_facts) if product_facts else "优质生鲜商品"
     prompt = (
-        f"为生鲜商品‘{product_name}’制作一张中文电商视觉素材。产地：{origin or '优质产地'}；规格：{spec or '精选装'}；"
+        f"为‘{fact_text}’制作一张高端亚洲生鲜电商视觉素材。"
         f"用途：{usage}；风格：{style}；画面气质：{tone}；构图：{composition}；背景：{background}；发布渠道：{platform}。"
-        "主体清晰、食材新鲜有水润质感，构图适合电商展示，留出简洁文字空间，"
-        "不要生成虚假品牌 Logo、乱码或水印。"
+        f"{layout_direction}。"
+        "这是品牌电商摄影与编辑排版，不是促销海报、传单或拼贴图。产品是唯一主角，优先呈现真实形状、成熟度、纹理和水润质感；"
+        "采用现代中文无衬线字体、深灰或深绿色文字，字重中等，字号克制，行距舒适，统一左对齐，四周至少保留 8% 安全边距。"
+        "画面文字最多 3 行：第一行只能是商品名称，第二、三行只能使用已提供的产地或规格；文字区域不超过画面 18%，不能压住商品，不能使用超大粗体。"
+        "严禁自行编造‘直发’‘新鲜采摘’‘净重’‘爆甜’‘限时特惠’等未提供的卖点、数字或承诺；缺少信息时宁可不放文字。"
+        "不要生成 Logo、价格标签、贴纸、爆炸框、边框、水印、乱码、英文装饰字或多组重复文案。"
     )
     payload = {
         "model": qwen_image_model(),
