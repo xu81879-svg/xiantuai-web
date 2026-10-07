@@ -22,11 +22,13 @@ LOCAL_STORAGE_DIR=/app/data
 CORS_ORIGINS=https://你的 Railway 域名
 QWEN_API_KEY=请配置为 Railway Secret
 QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+QWEN_MULTIMODAL_MODEL=qwen3-vl-plus
 QWEN_IMAGE_BASE_URL=https://dashscope.aliyuncs.com/api/v1
 QWEN_VISION_MODEL=qwen3-vl-plus
 QWEN_IMAGE_MODEL=qwen-image-2.0-pro
 QWEN_IMAGE_SIZE=1024*1024
-QWEN_TIMEOUT_SECONDS=45
+QWEN_TIMEOUT_SECONDS=120
+QWEN_READ_TIMEOUT_SECONDS=120
 QWEN_MOCK_FALLBACK=false
 PAYPAL_BASE_URL=https://api-m.paypal.com
 PAYPAL_CLIENT_ID=请配置为 Railway Secret
@@ -84,7 +86,7 @@ https://你的 Railway 公共域名/api/webhooks/paypal
 ./scripts/railway_healthcheck.sh https://你的-app.up.railway.app
 ```
 
-脚本只请求 `/api/health` 和 `/readyz`，验证应用进程与数据库连接，不调用千问、不消耗 API 额度。千问商品识别使用 OpenAI 兼容的 Vision Chat 接口，商品生图使用 DashScope 原生 Image 接口；Qwen-Image 返回的临时 URL 会被下载到 `LOCAL_STORAGE_DIR`，避免 24 小时后失效。
+脚本只请求 `/api/health` 和 `/readyz`，验证应用进程与数据库连接，不调用千问、不消耗 API 额度。千问商品识别使用包含“文字提示词 + 商品图片”的 OpenAI 兼容多模态 Chat 接口，默认模型为 `qwen3-vl-plus`；服务会在发送前将图片最长边压缩到 1600px，并对瞬时网络超时最多重试 2 次。商品生图使用 DashScope 原生 Image 接口，默认模型为 `qwen-image-2.0-pro`；Qwen-Image 返回的临时 URL 会被下载到 `LOCAL_STORAGE_DIR`，避免 24 小时后失效。`QWEN_MULTIMODAL_MODEL` 优先于 `QWEN_VISION_MODEL`，便于后续切换视觉模型而不改代码。
 
 环境变量完整性检查使用 `scripts/check_railway_env.sh`。它不会打印 Secret 值，也不会自动创建账户或 PayPal 订单：
 

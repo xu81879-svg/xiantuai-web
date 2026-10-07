@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import base64
+from io import BytesIO
 import json
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 import httpx
+from PIL import Image, ImageOps
 
 
 class QwenError(RuntimeError):
@@ -38,7 +41,7 @@ def qwen_image_base_url() -> str:
 
 
 def qwen_vision_model() -> str:
-    return _env("QWEN_VISION_MODEL", "qwen3-vl-plus")
+    return _env("QWEN_MULTIMODAL_MODEL", _env("QWEN_VISION_MODEL", "qwen3-vl-plus"))
 
 
 def qwen_image_model() -> str:
@@ -50,6 +53,13 @@ def qwen_timeout() -> float:
         return max(5.0, float(_env("QWEN_TIMEOUT_SECONDS", "45")))
     except ValueError:
         return 45.0
+
+
+def qwen_read_timeout() -> float:
+    try:
+        return max(30.0, float(_env("QWEN_READ_TIMEOUT_SECONDS", str(qwen_timeout()))))
+    except ValueError:
+        return qwen_timeout()
 
 
 def is_qwen_configured() -> bool:
@@ -69,15 +79,27 @@ def _headers() -> dict[str, str]:
 
 
 def _request_json(method: str, url: str, payload: dict[str, Any]) -> dict[str, Any]:
-    try:
-        response = httpx.request(method, url, headers=_headers(), json=payload, timeout=qwen_timeout())
-        response.raise_for_status()
-        body = response.json()
-    except httpx.HTTPStatusError as exc:
-        detail = exc.response.text[:500].replace("\n", " ")
-        raise QwenError(f"HTTP {exc.response.status_code}: {detail}") from exc
-    except (httpx.RequestError, ValueError) as exc:
-        raise QwenError(str(exc)) from exc
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            timeout = httpx.Timeout(qwen_read_timeout(), connect=10.0, write=30.0, pool=10.0)
+            response = httpx.request(method, url, headers=_headers(), json=payload, timeout=timeout)
+            response.raise_for_status()
+            body = response.json()
+            break
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:500].replace("\n", " ")
+            raise QwenError(f"HTTP {exc.response.status_code}: {detail}") from exc
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep(0.5 * (2**attempt))
+                continue
+            raise QwenError(f"千问网络请求失败：{exc}") from exc
+        except (httpx.RequestError, ValueError) as exc:
+            raise QwenError(str(exc)) from exc
+    else:
+        raise QwenError(f"千问网络请求失败：{last_error}")
     if not isinstance(body, dict):
         raise QwenError("千问返回格式不是 JSON 对象")
     if body.get("code") and body.get("message"):
@@ -86,9 +108,17 @@ def _request_json(method: str, url: str, payload: dict[str, Any]) -> dict[str, A
 
 
 def _data_url(path: Path, suffix: str) -> str:
-    mime = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}.get(suffix.lower(), "application/octet-stream")
-    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-    return f"data:{mime};base64,{encoded}"
+    """Compress the vision input without changing the stored original upload."""
+    try:
+        with Image.open(path) as source:
+            image = ImageOps.exif_transpose(source).convert("RGB")
+            image.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
+            buffer = BytesIO()
+            image.save(buffer, format="JPEG", quality=85, optimize=True)
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        return f"data:image/jpeg;base64,{encoded}"
+    except (OSError, ValueError) as exc:
+        raise QwenError("商品图片无法读取或压缩") from exc
 
 
 def _json_from_text(text: str) -> dict[str, Any]:
