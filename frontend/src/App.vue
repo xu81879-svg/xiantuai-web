@@ -13,6 +13,7 @@ type Generation = { id: string; status: string; usage: string; style: string; co
 type TemplateItem = { id: string; title: string; category: string; description: string; preview_url: string; usage: string; style: string }
 type HelpItem = { id: string; category: string; question: string; answer: string }
 type CreditPlan = { code: string; name: string; description: string; credits: number; amount: string; currency: string }
+type PosterTheme = { id: string; title: string; desc: string; kicker: string; accent: string; panel: string; tag: string; meta: string }
 
 const API_BASE = '/api'
 const staticPreview = import.meta.env.VITE_STATIC_PREVIEW === 'true'
@@ -32,6 +33,7 @@ const activeTone = ref('fresh')
 const activeComposition = ref('center')
 const activeBackground = ref('clean')
 const activePlatform = ref('taobao')
+const activePosterTheme = ref('fresh')
 const isGenerating = ref(false)
 const isRecognizing = ref(false)
 const notice = ref('')
@@ -70,6 +72,15 @@ const styles: StyleItem[] = [
   { id: 'farm', title: '产地直采', image: 'https://images.unsplash.com/photo-1471943311424-646960669fbc?auto=format&fit=crop&w=260&q=80' },
   { id: 'sale', title: '促销活动', image: 'https://images.unsplash.com/photo-1577003833619-76bbd7f82948?auto=format&fit=crop&w=260&q=80' },
 ]
+
+const posterThemes: PosterTheme[] = [
+  { id: 'fresh', title: '清新上新', desc: '绿色自然', kicker: '今日鲜选', accent: '#42d18a', panel: '#062b1a', tag: '#15965a', meta: '#e6f8ec' },
+  { id: 'premium', title: '精品质感', desc: '黑金高级', kicker: '甄选好物', accent: '#d8b36a', panel: '#1d1710', tag: '#8b6730', meta: '#f6ecd7' },
+  { id: 'sale', title: '活动转化', desc: '红橙醒目', kicker: '人气推荐', accent: '#ffb547', panel: '#351118', tag: '#bd3b37', meta: '#ffe5d7' },
+  { id: 'minimal', title: '极简留白', desc: '黑白克制', kicker: '商品主视觉', accent: '#ffffff', panel: '#111318', tag: '#3d4652', meta: '#e8edf2' },
+  { id: 'warm', title: '温暖生活', desc: '陶土暖调', kicker: '把新鲜带回家', accent: '#f1a36d', panel: '#321d18', tag: '#a95e42', meta: '#ffe9dc' },
+]
+const currentPosterTheme = computed(() => posterThemes.find((theme) => theme.id === activePosterTheme.value) || posterThemes[0])
 
 const tones = [{ id: 'fresh', title: '清新自然' }, { id: 'premium', title: '高级质感' }, { id: 'warm', title: '温暖生活' }, { id: 'sale', title: '促销醒目' }]
 const compositions = [{ id: 'center', title: '主体居中' }, { id: 'rule-of-thirds', title: '三分构图' }, { id: 'close-up', title: '近景特写' }, { id: 'flat-lay', title: '俯拍平铺' }]
@@ -428,6 +439,10 @@ function assetOverlay(asset: Result) {
   return { name, meta, tags, badge: asset.badge || '商品主图' }
 }
 
+function posterKicker(asset: Result) {
+  return `${currentPosterTheme.value.kicker}  ·  ${asset.badge || '商品主图'}`
+}
+
 function loadImage(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const image = new Image()
@@ -449,23 +464,25 @@ async function downloadComposedAsset(asset: Result) {
     context.drawImage(image, 0, 0, canvas.width, canvas.height)
 
     const copy = assetOverlay(asset)
+    const theme = currentPosterTheme.value
     const padding = Math.max(28, Math.round(canvas.width * 0.055))
     const titleSize = Math.max(28, Math.round(canvas.width * 0.038))
     const metaSize = Math.max(16, Math.round(canvas.width * 0.019))
     const kickerSize = Math.max(13, Math.round(canvas.width * 0.014))
     const panelTop = Math.round(canvas.height * 0.64)
+    const panelRgb = theme.panel.match(/[\da-f]{2}/gi)?.map((value) => parseInt(value, 16)) || [5, 25, 11]
     const gradient = context.createLinearGradient(0, panelTop - canvas.height * 0.12, 0, canvas.height)
-    gradient.addColorStop(0, 'rgba(5, 25, 11, 0)')
-    gradient.addColorStop(0.35, 'rgba(5, 25, 11, 0.62)')
-    gradient.addColorStop(1, 'rgba(5, 25, 11, 0.93)')
+    gradient.addColorStop(0, `rgba(${panelRgb.join(',')}, 0)`)
+    gradient.addColorStop(0.35, `rgba(${panelRgb.join(',')}, 0.68)`)
+    gradient.addColorStop(1, `rgba(${panelRgb.join(',')}, 0.96)`)
     context.fillStyle = gradient
     context.fillRect(0, panelTop - canvas.height * 0.12, canvas.width, canvas.height - panelTop + canvas.height * 0.12)
-    context.fillStyle = '#42d18a'
+    context.fillStyle = theme.accent
     context.fillRect(padding, panelTop + 18, Math.max(5, Math.round(canvas.width * 0.006)), Math.round(canvas.height * 0.16))
-    context.fillStyle = '#d8f7e5'
+    context.fillStyle = theme.meta
     context.textBaseline = 'alphabetic'
     context.font = `600 ${kickerSize}px "Noto Sans SC", "Microsoft YaHei", sans-serif`
-    context.fillText(`${copy.badge}  ·  鲜图 AI`, padding + 18, panelTop + 33)
+    context.fillText(`${theme.kicker}  ·  ${copy.badge}  ·  鲜图 AI`, padding + 18, panelTop + 33)
     context.fillStyle = '#ffffff'
     context.font = `700 ${titleSize}px "Noto Sans SC", "Microsoft YaHei", sans-serif`
     context.fillText(copy.name, padding + 18, panelTop + 78)
@@ -477,9 +494,10 @@ async function downloadComposedAsset(asset: Result) {
     for (const tag of copy.tags) {
       const tagWidth = context.measureText(tag).width + 18
       if (tagX + tagWidth > canvas.width - padding) break
-      context.fillStyle = 'rgba(31, 154, 89, 0.78)'
+      const tagRgb = theme.tag.match(/[\da-f]{2}/gi)?.map((value) => parseInt(value, 16)) || [31, 154, 89]
+      context.fillStyle = `rgba(${tagRgb.join(',')}, 0.86)`
       context.fillRect(tagX, tagY - 15, tagWidth, 24)
-      context.fillStyle = '#effff5'
+      context.fillStyle = theme.meta
       context.fillText(tag, tagX + 9, tagY + 2)
       tagX += tagWidth + 8
     }
@@ -629,7 +647,8 @@ async function downloadComposedAsset(asset: Result) {
 
           <section class="panel result-panel">
             <div class="result-header"><div class="step-title compact"><span class="sparkle">✦</span><div><b>生成结果</b><small>{{ generatedCopy }}</small></div></div><button class="refresh" @click="generate">⟳　重新生成</button></div>
-            <div v-if="results.length" class="result-grid"><article v-for="asset in results" :key="asset.id || asset.title" class="result-card" :class="asset.kind"><img :src="asset.image" alt="生成结果" /><div class="result-overlay"><span>{{ asset.badge }}</span><button :aria-label="`下载${asset.badge}`" @click="downloadAsset(asset)">↓</button></div><div class="asset-text-layer"><span class="poster-kicker">{{ assetOverlay(asset).badge }}　·　鲜图 AI</span><strong>{{ assetOverlay(asset).name }}</strong><small v-if="assetOverlay(asset).meta">{{ assetOverlay(asset).meta }}</small><div v-if="assetOverlay(asset).tags.length" class="asset-tags"><span v-for="tag in assetOverlay(asset).tags" :key="tag">{{ tag }}</span></div></div></article></div>
+            <div class="poster-theme-picker"><div class="poster-theme-heading"><b>海报模板</b><small>预览与下载会同步使用</small></div><div class="poster-theme-options"><button v-for="theme in posterThemes" :key="theme.id" class="poster-theme-option" :class="[{ chosen: activePosterTheme === theme.id }, `theme-${theme.id}`]" @click="activePosterTheme = theme.id"><i></i><span>{{ theme.title }}</span><small>{{ theme.desc }}</small></button></div></div>
+            <div v-if="results.length" class="result-grid"><article v-for="asset in results" :key="asset.id || asset.title" class="result-card" :class="[asset.kind, `poster-${activePosterTheme}`]"><img :src="asset.image" alt="生成结果" /><div class="result-overlay"><span>{{ asset.badge }}</span><button :aria-label="`下载${asset.badge}`" @click="downloadAsset(asset)">↓</button></div><div class="asset-text-layer"><span class="poster-kicker">{{ posterKicker(asset) }}　·　鲜图 AI</span><strong>{{ assetOverlay(asset).name }}</strong><small v-if="assetOverlay(asset).meta">{{ assetOverlay(asset).meta }}</small><div v-if="assetOverlay(asset).tags.length" class="asset-tags"><span v-for="tag in assetOverlay(asset).tags" :key="tag">{{ tag }}</span></div></div></article></div>
             <div v-else class="result-empty"><span>✦</span><b>还没有生成结果</b><small>选择用途和风格后，点击一键生成整套图片</small></div>
             <div class="result-footer"><span>●　已为你生成 {{ results.length }} 张高质量图片，包含多种使用场景</span><button @click="downloadAll">⇩　下载整套素材</button></div>
           </section>
