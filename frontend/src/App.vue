@@ -14,6 +14,7 @@ type TemplateItem = { id: string; title: string; category: string; description: 
 type HelpItem = { id: string; category: string; question: string; answer: string }
 type CreditPlan = { code: string; name: string; description: string; credits: number; amount: string; currency: string }
 type PosterTheme = { id: string; title: string; desc: string; kicker: string; accent: string; panel: string; tag: string; meta: string }
+type MarketingTemplate = { id: string; title: string; desc: string; theme: string; copy: { kicker: string; title: string; subtitle: string; tags: string } }
 type RecognitionHistory = { id: string; image_url?: string; name: string; origin: string; spec: string; tags: string[]; recognition_confidence?: number; recognition_evidence?: string; created_at: string }
 
 const API_BASE = '/api'
@@ -87,6 +88,18 @@ const posterThemes: PosterTheme[] = [
   { id: 'sale', title: '活动转化', desc: '红橙醒目', kicker: '人气推荐', accent: '#ffb547', panel: '#351118', tag: '#bd3b37', meta: '#ffe5d7' },
   { id: 'minimal', title: '极简留白', desc: '黑白克制', kicker: '商品主视觉', accent: '#ffffff', panel: '#111318', tag: '#3d4652', meta: '#e8edf2' },
   { id: 'warm', title: '温暖生活', desc: '陶土暖调', kicker: '把新鲜带回家', accent: '#f1a36d', panel: '#321d18', tag: '#a95e42', meta: '#ffe9dc' },
+  { id: 'orchard', title: '果园溯源', desc: '自然产地', kicker: '崂山鲜果季', accent: '#f4c95d', panel: '#26351d', tag: '#668c43', meta: '#fff3c9' },
+  { id: 'dew', title: '晨露鲜采', desc: '清透水润', kicker: '清晨现摘', accent: '#9de8e0', panel: '#123b43', tag: '#278c91', meta: '#e3fffb' },
+  { id: 'festival', title: '节庆礼赠', desc: '喜庆热烈', kicker: '心意好礼', accent: '#ffd56a', panel: '#5d1821', tag: '#bd3b45', meta: '#fff0d0' },
+  { id: 'social', title: '种草分享', desc: '轻松生活', kicker: '今天吃点好的', accent: '#f3a8c5', panel: '#43263a', tag: '#a85176', meta: '#ffe7f0' },
+]
+const marketingTemplates: MarketingTemplate[] = [
+  { id: 'fresh-launch', title: '上新首图', desc: '适合新品首发，突出新鲜和产地', theme: 'fresh', copy: { kicker: '今日鲜选', title: '', subtitle: '山东·青岛崂山 · 当季鲜果', tags: '鲜嫩多汁、当季上新、产地直采' } },
+  { id: 'orchard-trace', title: '产地溯源', desc: '适合强调果园、地域和自然成熟', theme: 'orchard', copy: { kicker: '崂山鲜果季', title: '', subtitle: '山东·青岛崂山 · 自然成熟', tags: '果园直采、自然成熟、安心鲜果' } },
+  { id: 'dew-fresh', title: '晨露鲜采', desc: '适合表现果面光泽和清透水润感', theme: 'dew', copy: { kicker: '清晨现摘', title: '', subtitle: '清透果面 · 新鲜看得见', tags: '晨露光泽、清甜多汁、现摘现发' } },
+  { id: 'gift-festival', title: '节庆礼赠', desc: '适合节日礼盒和送礼场景', theme: 'festival', copy: { kicker: '心意好礼', title: '', subtitle: '把崂山的新鲜送到家', tags: '体面礼赠、品质之选、节日送礼' } },
+  { id: 'social-seed', title: '小红书种草', desc: '适合生活方式内容和社交分享', theme: 'social', copy: { kicker: '今天吃点好的', title: '', subtitle: '一口咬下，满是自然清甜', tags: '今日份快乐、真实好吃、拍照出片' } },
+  { id: 'sale-convert', title: '活动转化', desc: '适合限时活动和电商促销', theme: 'sale', copy: { kicker: '人气推荐', title: '', subtitle: '鲜果当季 · 限时尝鲜', tags: '限时尝鲜、爆款推荐、现在下单' } },
 ]
 const currentPosterTheme = computed(() => posterThemes.find((theme) => theme.id === activePosterTheme.value) || posterThemes[0])
 
@@ -506,6 +519,12 @@ function posterKicker(asset: Result) {
   return `${posterCopy.value.kicker.trim() || currentPosterTheme.value.kicker}  ·  ${asset.badge || '商品主图'}`
 }
 
+function applyMarketingTemplate(template: MarketingTemplate) {
+  activePosterTheme.value = template.theme
+  posterCopy.value = { ...template.copy, title: template.copy.title || product.value.name }
+  notice.value = `已切换至「${template.title}」海报排版`
+}
+
 function loadImage(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const image = new Image()
@@ -713,7 +732,7 @@ async function downloadComposedAsset(asset: Result) {
 
           <section class="panel result-panel">
             <div class="result-header"><div class="step-title compact"><span class="sparkle">✦</span><div><b>生成结果</b><small>{{ generatedCopy }}</small></div></div><button class="refresh" @click="generate">⟳　重新生成</button></div>
-            <div class="poster-theme-picker"><div class="poster-theme-heading"><b>海报模板</b><small>预览与下载会同步使用</small></div><div class="poster-theme-options"><button v-for="theme in posterThemes" :key="theme.id" class="poster-theme-option" :class="[{ chosen: activePosterTheme === theme.id }, `theme-${theme.id}`]" @click="activePosterTheme = theme.id"><i></i><span>{{ theme.title }}</span><small>{{ theme.desc }}</small></button></div><div class="poster-copy-editor"><label><span>眉标</span><input v-model="posterCopy.kicker" maxlength="20" placeholder="跟随模板文案" /></label><label><span>主标题</span><input v-model="posterCopy.title" maxlength="30" :placeholder="product.name || '商品名称'" /></label><label><span>副文案</span><input v-model="posterCopy.subtitle" maxlength="50" placeholder="产地 · 规格" /></label><label><span>标签</span><input v-model="posterCopy.tags" maxlength="60" placeholder="用、分隔，例如：鲜甜、当季" /></label><button class="copy-reset" @click="posterCopy = { kicker: '', title: '', subtitle: '', tags: '' }">恢复默认</button></div></div>
+            <div class="poster-theme-picker"><div class="poster-theme-heading"><b>海报模板</b><small>预览与下载会同步使用</small></div><div class="poster-theme-options"><button v-for="theme in posterThemes" :key="theme.id" class="poster-theme-option" :class="[{ chosen: activePosterTheme === theme.id }, `theme-${theme.id}`]" @click="activePosterTheme = theme.id"><i></i><span>{{ theme.title }}</span><small>{{ theme.desc }}</small></button></div><div class="marketing-template-row"><span>营销文案</span><button v-for="template in marketingTemplates" :key="template.id" :class="{ chosen: posterCopy.kicker === template.copy.kicker && activePosterTheme === template.theme }" @click="applyMarketingTemplate(template)">{{ template.title }}</button></div><div class="poster-copy-editor"><label><span>眉标</span><input v-model="posterCopy.kicker" maxlength="20" placeholder="跟随模板文案" /></label><label><span>主标题</span><input v-model="posterCopy.title" maxlength="30" :placeholder="product.name || '商品名称'" /></label><label><span>副文案</span><input v-model="posterCopy.subtitle" maxlength="50" placeholder="产地 · 规格" /></label><label><span>标签</span><input v-model="posterCopy.tags" maxlength="60" placeholder="用、分隔，例如：鲜甜、当季" /></label><button class="copy-reset" @click="posterCopy = { kicker: '', title: '', subtitle: '', tags: '' }">恢复默认</button></div></div>
             <div v-if="results.length" class="result-grid"><article v-for="asset in results" :key="asset.id || asset.title" class="result-card" :class="[asset.kind, `poster-${activePosterTheme}`]"><img :src="asset.image" alt="生成结果" /><div class="result-overlay"><span>{{ asset.badge }}</span><button :aria-label="`下载${asset.badge}`" @click="downloadAsset(asset)">↓</button></div><div class="asset-text-layer"><span class="poster-kicker">{{ posterKicker(asset) }}　·　鲜图 AI</span><strong>{{ assetOverlay(asset).name }}</strong><small v-if="assetOverlay(asset).meta">{{ assetOverlay(asset).meta }}</small><div v-if="assetOverlay(asset).tags.length" class="asset-tags"><span v-for="tag in assetOverlay(asset).tags" :key="tag">{{ tag }}</span></div></div></article></div>
             <div v-else class="result-empty"><span>✦</span><b>还没有生成结果</b><small>选择用途和风格后，点击一键生成整套图片</small></div>
             <div class="result-footer"><span>●　已为你生成 {{ results.length }} 张高质量图片，包含多种使用场景</span><button @click="downloadAll">⇩　下载整套素材</button></div>

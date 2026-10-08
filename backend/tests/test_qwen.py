@@ -49,6 +49,8 @@ def test_generate_apricot_prompt_emphasizes_fresh_gloss(monkeypatch):
     prompt = captured["payload"]["input"]["messages"][0]["content"][0]["text"]
     assert "清透光泽与新鲜感" in prompt
     assert "不能变成蜡质塑料反光" in prompt
+    assert "极轻薄且均匀的天然绒毛" in prompt
+    assert "黄橙色细腻果肉" in prompt
 
 
 def test_generate_image_uses_controlled_commercial_prompt(monkeypatch):
