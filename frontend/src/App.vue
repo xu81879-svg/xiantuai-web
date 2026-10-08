@@ -425,7 +425,7 @@ function assetOverlay(asset: Result) {
   const name = asset.product_name || product.value.name || asset.title
   const meta = [asset.product_origin || product.value.origin, asset.product_spec || product.value.spec].filter(Boolean).join(' · ')
   const tags = (asset.product_tags?.length ? asset.product_tags : product.value.tags).filter(Boolean).slice(0, 4)
-  return { name, meta, tags }
+  return { name, meta, tags, badge: asset.badge || '商品主图' }
 }
 
 function loadImage(url: string): Promise<HTMLImageElement> {
@@ -452,18 +452,37 @@ async function downloadComposedAsset(asset: Result) {
     const padding = Math.max(28, Math.round(canvas.width * 0.055))
     const titleSize = Math.max(28, Math.round(canvas.width * 0.038))
     const metaSize = Math.max(16, Math.round(canvas.width * 0.019))
-    const gradient = context.createLinearGradient(0, canvas.height * 0.62, 0, canvas.height)
+    const kickerSize = Math.max(13, Math.round(canvas.width * 0.014))
+    const panelTop = Math.round(canvas.height * 0.64)
+    const gradient = context.createLinearGradient(0, panelTop - canvas.height * 0.12, 0, canvas.height)
     gradient.addColorStop(0, 'rgba(5, 25, 11, 0)')
-    gradient.addColorStop(1, 'rgba(5, 25, 11, 0.78)')
+    gradient.addColorStop(0.35, 'rgba(5, 25, 11, 0.62)')
+    gradient.addColorStop(1, 'rgba(5, 25, 11, 0.93)')
     context.fillStyle = gradient
-    context.fillRect(0, canvas.height * 0.55, canvas.width, canvas.height * 0.45)
-    context.fillStyle = '#ffffff'
+    context.fillRect(0, panelTop - canvas.height * 0.12, canvas.width, canvas.height - panelTop + canvas.height * 0.12)
+    context.fillStyle = '#42d18a'
+    context.fillRect(padding, panelTop + 18, Math.max(5, Math.round(canvas.width * 0.006)), Math.round(canvas.height * 0.16))
+    context.fillStyle = '#d8f7e5'
     context.textBaseline = 'alphabetic'
-    context.font = `600 ${titleSize}px "Noto Sans SC", "Microsoft YaHei", sans-serif`
-    context.fillText(copy.name, padding, canvas.height - padding - metaSize - 14)
+    context.font = `600 ${kickerSize}px "Noto Sans SC", "Microsoft YaHei", sans-serif`
+    context.fillText(`${copy.badge}  ·  鲜图 AI`, padding + 18, panelTop + 33)
+    context.fillStyle = '#ffffff'
+    context.font = `700 ${titleSize}px "Noto Sans SC", "Microsoft YaHei", sans-serif`
+    context.fillText(copy.name, padding + 18, panelTop + 78)
     context.font = `400 ${metaSize}px "Noto Sans SC", "Microsoft YaHei", sans-serif`
-    const detail = [copy.meta, copy.tags.join(' · ')].filter(Boolean).join('  |  ')
-    if (detail) context.fillText(detail, padding, canvas.height - padding)
+    if (copy.meta) context.fillText(copy.meta, padding + 18, panelTop + 108)
+    let tagX = padding + 18
+    const tagY = panelTop + 125
+    context.font = `500 ${Math.max(13, Math.round(metaSize * 0.78))}px "Noto Sans SC", "Microsoft YaHei", sans-serif`
+    for (const tag of copy.tags) {
+      const tagWidth = context.measureText(tag).width + 18
+      if (tagX + tagWidth > canvas.width - padding) break
+      context.fillStyle = 'rgba(31, 154, 89, 0.78)'
+      context.fillRect(tagX, tagY - 15, tagWidth, 24)
+      context.fillStyle = '#effff5'
+      context.fillText(tag, tagX + 9, tagY + 2)
+      tagX += tagWidth + 8
+    }
 
     const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92))
     if (!blob) throw new Error('图片合成失败')
@@ -610,7 +629,7 @@ async function downloadComposedAsset(asset: Result) {
 
           <section class="panel result-panel">
             <div class="result-header"><div class="step-title compact"><span class="sparkle">✦</span><div><b>生成结果</b><small>{{ generatedCopy }}</small></div></div><button class="refresh" @click="generate">⟳　重新生成</button></div>
-            <div v-if="results.length" class="result-grid"><article v-for="asset in results" :key="asset.id || asset.title" class="result-card" :class="asset.kind"><img :src="asset.image" alt="生成结果" /><div class="result-overlay"><span>{{ asset.badge }}</span><button :aria-label="`下载${asset.badge}`" @click="downloadAsset(asset)">↓</button></div><div class="asset-text-layer"><strong>{{ assetOverlay(asset).name }}</strong><small v-if="assetOverlay(asset).meta">{{ assetOverlay(asset).meta }}</small><div v-if="assetOverlay(asset).tags.length" class="asset-tags"><span v-for="tag in assetOverlay(asset).tags" :key="tag">{{ tag }}</span></div></div></article></div>
+            <div v-if="results.length" class="result-grid"><article v-for="asset in results" :key="asset.id || asset.title" class="result-card" :class="asset.kind"><img :src="asset.image" alt="生成结果" /><div class="result-overlay"><span>{{ asset.badge }}</span><button :aria-label="`下载${asset.badge}`" @click="downloadAsset(asset)">↓</button></div><div class="asset-text-layer"><span class="poster-kicker">{{ assetOverlay(asset).badge }}　·　鲜图 AI</span><strong>{{ assetOverlay(asset).name }}</strong><small v-if="assetOverlay(asset).meta">{{ assetOverlay(asset).meta }}</small><div v-if="assetOverlay(asset).tags.length" class="asset-tags"><span v-for="tag in assetOverlay(asset).tags" :key="tag">{{ tag }}</span></div></div></article></div>
             <div v-else class="result-empty"><span>✦</span><b>还没有生成结果</b><small>选择用途和风格后，点击一键生成整套图片</small></div>
             <div class="result-footer"><span>●　已为你生成 {{ results.length }} 张高质量图片，包含多种使用场景</span><button @click="downloadAll">⇩　下载整套素材</button></div>
           </section>

@@ -53,3 +53,25 @@ def test_generate_image_uses_controlled_commercial_prompt(monkeypatch):
     assert "negative_prompt" in parameters
     assert "绝对不要生成任何文字" in prompt
     assert "产品必须是画面唯一主角" in prompt
+
+
+def test_generate_image_uses_uploaded_reference_for_product_fidelity(monkeypatch, tmp_path: Path):
+    source = tmp_path / "uploaded-product.jpg"
+    Image.new("RGB", (640, 480), (220, 40, 40)).save(source)
+    captured = {}
+
+    def fake_request(method, url, payload):
+        captured.update({"method": method, "url": url, "payload": payload})
+        return {"output": {"choices": [{"message": {"content": [{"image": "https://example.com/edited.png"}]}}]}}
+
+    monkeypatch.setenv("QWEN_IMAGE_EDIT_MODEL", "qwen-image-2.0-pro")
+    monkeypatch.setattr(qwen, "_request_json", fake_request)
+
+    image_url = qwen.generate_image("崂山大樱桃", "山东·青岛崂山", "500g", "hero", "premium", reference_image=source)
+
+    content = captured["payload"]["input"]["messages"][0]["content"]
+    assert captured["payload"]["model"] == "qwen-image-2.0-pro"
+    assert content[0]["image"].startswith("data:image/jpeg;base64,")
+    assert "唯一且权威的商品参考" in content[1]["text"]
+    assert "严格保留商品的品种" in content[1]["text"]
+    assert image_url == "https://example.com/edited.png"

@@ -161,6 +161,15 @@ def make_assets(product_name: str, primary_image: str | None = None, origin: str
     ]
 
 
+def product_reference_path(product: Product) -> Path | None:
+    """Resolve only files from our upload volume; never treat user text as a path."""
+    image_url = (product.image_url or "").strip()
+    if not image_url.startswith("/uploads/"):
+        return None
+    candidate = (UPLOAD_DIR / Path(image_url).name).resolve()
+    return candidate if candidate.parent == UPLOAD_DIR.resolve() and candidate.is_file() else None
+
+
 def seed_catalog(db: Session) -> None:
     if not db.scalar(select(Template.id)):
         db.add_all([
@@ -433,7 +442,7 @@ def create_generation(payload: GenerationPayload, user: User = Depends(current_u
     primary_image = None
     if is_qwen_configured():
         try:
-            remote_image = generate_image(product.name, product.origin, product.spec, payload.usage, payload.style, payload.tone, payload.composition, payload.background, payload.platform)
+            remote_image = generate_image(product.name, product.origin, product.spec, payload.usage, payload.style, payload.tone, payload.composition, payload.background, payload.platform, reference_image=product_reference_path(product))
             primary_image = persist_remote_image(remote_image, UPLOAD_DIR)
         except QwenError as exc:
             if not allow_mock_fallback():
@@ -459,7 +468,7 @@ def list_assets(q: str | None = Query(default=None, max_length=80), limit: int =
     for generation in generations:
         product = db.get(Product, generation.product_id) if generation.product_id else None
         for asset in generation.assets or []:
-            item = {**asset, "id": f"{generation.id}:{asset.get('kind', 'asset')}", "generation_id": generation.id, "product_id": generation.product_id, "product_name": product.name if product else None, "created_at": generation.created_at.isoformat() if generation.created_at else None}
+            item = {**asset, "id": f"{generation.id}:{asset.get('kind', 'asset')}", "generation_id": generation.id, "product_id": generation.product_id, "product_name": product.name if product else None, "product_origin": product.origin if product else asset.get("product_origin", ""), "product_spec": product.spec if product else asset.get("product_spec", ""), "product_tags": (product.tags or [])[:4] if product else asset.get("product_tags", []), "created_at": generation.created_at.isoformat() if generation.created_at else None}
             if not q or q.strip().lower() in f"{item.get('title', '')} {item.get('badge', '')} {item.get('product_name', '')}".lower():
                 items.append(item)
     return {"items": items[offset:offset + limit], "total": len(items), "limit": limit, "offset": offset}

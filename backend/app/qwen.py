@@ -48,6 +48,10 @@ def qwen_image_model() -> str:
     return _env("QWEN_IMAGE_MODEL", "qwen-image-2.0-pro")
 
 
+def qwen_image_edit_model() -> str:
+    return _env("QWEN_IMAGE_EDIT_MODEL", qwen_image_model())
+
+
 def qwen_image_negative_prompt() -> str:
     return _env(
         "QWEN_IMAGE_NEGATIVE_PROMPT",
@@ -190,8 +194,8 @@ def recognize_product(image_path: Path, suffix: str) -> dict[str, Any]:
     }
 
 
-def generate_image(product_name: str, origin: str, spec: str, usage: str, style: str, tone: str = "fresh", composition: str = "center", background: str = "clean", platform: str = "taobao") -> str:
-    """Use Qwen-Image through DashScope's native synchronous generation endpoint."""
+def generate_image(product_name: str, origin: str, spec: str, usage: str, style: str, tone: str = "fresh", composition: str = "center", background: str = "clean", platform: str = "taobao", reference_image: Path | None = None) -> str:
+    """Generate from text, or edit a supplied product image while preserving its identity."""
     usage_direction = {
         "hero": "正方形电商主图，商品完整可见，占画面约 70%，主体清晰突出，四周保留均衡留白",
         "detail": "详情页质感特写，靠近商品表现表皮纹理、汁水和新鲜度，背景干净，不切断商品关键部位",
@@ -241,9 +245,22 @@ def generate_image(product_name: str, origin: str, spec: str, usage: str, style:
         "画面内绝对不要生成任何文字、数字、字母、Logo、品牌标识、水印、价格、标签或装饰性字体；所有标题和商品信息由网页界面后期叠加。"
         "不要添加未提供的卖点、产地、规格、包装承诺或夸张道具；不要复制商品，不要出现多个主商品，不要让主体漂浮或被裁切。"
     )
+    content: list[dict[str, str]] = []
+    if reference_image:
+        if not reference_image.is_file():
+            raise QwenError("商品参考图不存在")
+        content.append({"image": _data_url(reference_image, reference_image.suffix.lower())})
+        prompt = (
+            "第一张输入图片是用户上传的真实商品图，必须把它作为唯一且权威的商品参考。"
+            "严格保留商品的品种、数量、外形轮廓、比例、颜色、成熟度、表皮纹理、连接关系和所有可见细节；"
+            "不要重新想象商品，不要替换成相似商品，不要改变商品身份。只允许改变摄影环境、光线、构图和少量不遮挡商品的天然道具。"
+            "商品必须保持完整可识别，不能被裁切、变形、重复或添加包装。"
+            + prompt
+        )
+    content.append({"text": prompt})
     payload = {
-        "model": qwen_image_model(),
-        "input": {"messages": [{"role": "user", "content": [{"text": prompt}]}]},
+        "model": qwen_image_edit_model() if reference_image else qwen_image_model(),
+        "input": {"messages": [{"role": "user", "content": content}]},
         "parameters": {
             "negative_prompt": qwen_image_negative_prompt(),
             "prompt_extend": False,
