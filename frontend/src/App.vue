@@ -507,7 +507,9 @@ async function generate() {
       const error = await response.json().catch(() => ({}))
       throw new Error(error.detail || '生成失败，请稍后重试')
     }
-    const data = await response.json()
+    const queued = await response.json()
+    notice.value = '任务已提交，后台正在生成，页面不会因等待超时而中断…'
+    const data = await pollGeneration(queued.id)
     if (Array.isArray(data.assets) && data.assets.length) results.value = data.assets
     completePipeline('model', '图片模型已返回素材')
     await advancePipeline('quality', '正在检查商品身份、构图和伪影')
@@ -565,6 +567,21 @@ async function advancePipeline(id: string, detail: string) {
 
 function completePipeline(id: string, detail: string) {
   pipelineStages.value = pipelineStages.value.map((stage) => stage.id === id ? { ...stage, status: 'completed', detail } : stage)
+}
+
+async function pollGeneration(generationId: string) {
+  for (let attempt = 0; attempt < 180; attempt += 1) {
+    await new Promise((resolve) => window.setTimeout(resolve, 2000))
+    const response = await fetch(`${API_BASE}/generations/${generationId}`, { headers: authHeaders() })
+    if (!response.ok) throw new Error('读取生成任务状态失败')
+    const task = await response.json()
+    if (task.status === 'processing') {
+      await advancePipeline('model', '后台任务运行中，避免页面超时')
+    }
+    if (task.status === 'completed') return task
+    if (task.status === 'failed') throw new Error(task.error_message || '后台生图失败，额度已退回')
+  }
+  throw new Error('生成任务等待超时，请稍后在生成记录中查看')
 }
 
 function loadImage(url: string): Promise<HTMLImageElement> {

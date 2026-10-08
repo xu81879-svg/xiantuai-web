@@ -10,7 +10,7 @@ from typing import Any, AsyncIterator
 from uuid import uuid4
 
 import jwt
-from fastapi import Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import BackgroundTasks, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -171,6 +171,51 @@ def product_reference_path(product: Product) -> Path | None:
         return None
     candidate = (UPLOAD_DIR / Path(image_url).name).resolve()
     return candidate if candidate.parent == UPLOAD_DIR.resolve() and candidate.is_file() else None
+
+
+def run_generation_pipeline(generation_id: str, product_id: str, options: dict[str, str]) -> None:
+    """Run the long Qwen pipeline outside the HTTP request lifecycle."""
+    with SessionLocal() as db:
+        generation = db.get(Generation, generation_id)
+        product = db.get(Product, product_id)
+        if not generation or not product:
+            logger.error("pipeline.task_missing generation=%s product=%s", generation_id, product_id)
+            return
+        generation.status = "processing"
+        db.commit()
+        quality_report: dict[str, Any] = {"passed": True, "retries": 0, "reasons": [], "source": "not_run"}
+        plan = compile_generation_plan(product.name, product.origin, product.spec, product.tags, options["usage"])
+        try:
+            primary_image = None
+            if is_qwen_configured():
+                reference_image = product_reference_path(product)
+                for attempt in range(2):
+                    logger.info("pipeline.generate attempt=%s task=%s product=%s usage=%s engine=%s", attempt + 1, generation_id, product.name, options["usage"], plan.engine)
+                    remote_image = generate_image(product.name, product.origin, product.spec, options["usage"], options["style"], options["tone"], options["composition"], options["background"], options["platform"], reference_image=reference_image, tags=product.tags)
+                    primary_image = persist_remote_image(remote_image, UPLOAD_DIR)
+                    quality_report = quality_check_image(UPLOAD_DIR / Path(primary_image).name, product.name, options["usage"])
+                    quality_report["retries"] = attempt
+                    logger.info("pipeline.quality task=%s passed=%s source=%s retries=%s reasons=%s", generation_id, quality_report.get("passed"), quality_report.get("source"), attempt, " | ".join(quality_report.get("reasons", [])))
+                    if quality_report.get("passed") or attempt == 1:
+                        break
+                    logger.warning("pipeline.retry task=%s reason=quality_check_failed", generation_id)
+            pipeline = {"product_understanding": {"category": plan.category, "selling_points": plan.selling_points, "structure": plan.structure}, "usage_identification": plan.image_usage, "engine": plan.engine, "prompt_compiler": "compiled", "quality_check": quality_report}
+            assets = make_assets(product.name, primary_image, product.origin, product.spec, product.tags)
+            if assets:
+                assets[0]["pipeline"] = pipeline
+            generation.assets = assets
+            generation.status = "completed"
+            db.commit()
+            logger.info("pipeline.completed task=%s status=completed", generation_id)
+        except QwenError as exc:
+            generation.status = "failed"
+            generation.error_message = str(exc)[:500]
+            user = db.get(User, generation.owner_id)
+            if user:
+                user.credit_balance += 1
+                db.add(CreditTransaction(user_id=user.id, amount=1, balance_after=user.credit_balance, reason="generation_refund"))
+            db.commit()
+            logger.exception("pipeline.failed task=%s error=%s", generation_id, exc)
 
 
 def seed_catalog(db: Session) -> None:
@@ -430,7 +475,7 @@ def delete_product(product_id: str, user: User = Depends(current_user), db: Sess
     return {"deleted": True, "id": product_id}
 
 @app.post("/api/generations")
-def create_generation(payload: GenerationPayload, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+def create_generation(payload: GenerationPayload, background_tasks: BackgroundTasks, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     if user.credit_balance < 1:
         raise HTTPException(status_code=402, detail="生成额度不足，请购买额度包")
     product = db.get(Product, payload.product_id) if payload.product_id else None
@@ -442,33 +487,23 @@ def create_generation(payload: GenerationPayload, user: User = Depends(current_u
         db.flush()
     if not product:
         raise HTTPException(status_code=422, detail="请提供商品信息")
-    primary_image = None
-    quality_report: dict[str, Any] = {"passed": True, "retries": 0, "reasons": [], "source": "not_run"}
-    pipeline_plan = compile_generation_plan(product.name, product.origin, product.spec, product.tags, payload.usage)
-    if is_qwen_configured():
-        try:
-            reference_image = product_reference_path(product)
-            for attempt in range(2):
-                logger.info("pipeline.generate attempt=%s product=%s usage=%s engine=%s", attempt + 1, product.name, payload.usage, pipeline_plan.engine)
-                remote_image = generate_image(product.name, product.origin, product.spec, payload.usage, payload.style, payload.tone, payload.composition, payload.background, payload.platform, reference_image=reference_image, tags=product.tags)
-                primary_image = persist_remote_image(remote_image, UPLOAD_DIR)
-                quality_report = quality_check_image(UPLOAD_DIR / Path(primary_image).name, product.name, payload.usage)
-                quality_report["retries"] = attempt
-                logger.info("pipeline.quality passed=%s source=%s retries=%s reasons=%s", quality_report.get("passed"), quality_report.get("source"), quality_report.get("retries"), " | ".join(quality_report.get("reasons", [])))
-                if quality_report.get("passed") or attempt == 1:
-                    break
-                logger.warning("pipeline.retry reason=quality_check_failed product=%s", product.name)
-        except QwenError as exc:
-            if not allow_mock_fallback():
-                raise HTTPException(status_code=502, detail=f"千问生图失败：{exc}") from exc
-    assets = make_assets(product.name, primary_image, product.origin, product.spec, product.tags)
+    assets: list[dict[str, Any]] = []
     user.credit_balance -= 1
-    generation = Generation(owner_id=user.id, product_id=product.id, usage=payload.usage, style=payload.style, status="completed", assets=assets)
+    generation = Generation(owner_id=user.id, product_id=product.id, usage=payload.usage, style=payload.style, status="queued", assets=assets)
     db.add(generation)
     db.add(CreditTransaction(user_id=user.id, amount=-1, balance_after=user.credit_balance, reason="generation"))
     db.commit()
     db.refresh(generation)
-    return {"id": generation.id, "status": generation.status, "usage": generation.usage, "style": generation.style, "product": serialize_product(product), "assets": assets, "pipeline": {"product_understanding": {"category": pipeline_plan.category, "selling_points": pipeline_plan.selling_points, "structure": pipeline_plan.structure}, "usage_identification": pipeline_plan.image_usage, "engine": pipeline_plan.engine, "prompt_compiler": "compiled", "quality_check": quality_report}}
+    background_tasks.add_task(run_generation_pipeline, generation.id, product.id, payload.model_dump(exclude={"product", "product_id"}))
+    return {"id": generation.id, "status": generation.status, "usage": generation.usage, "style": generation.style, "product": serialize_product(product), "assets": [], "pipeline": {"status": "queued"}}
+
+@app.get("/api/generations/{generation_id}")
+def get_generation(generation_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+    generation = db.scalar(select(Generation).where(Generation.id == generation_id, Generation.owner_id == user.id))
+    if not generation:
+        raise HTTPException(status_code=404, detail="生成任务不存在")
+    pipeline = (generation.assets[0].get("pipeline") if generation.assets else None) or {"status": generation.status}
+    return {"id": generation.id, "status": generation.status, "usage": generation.usage, "style": generation.style, "product": serialize_product(generation.product) if generation.product else None, "assets": generation.assets or [], "pipeline": pipeline, "error_message": generation.error_message}
 
 @app.get("/api/generations")
 def list_generations(user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
