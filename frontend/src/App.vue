@@ -15,7 +15,7 @@ type HelpItem = { id: string; category: string; question: string; answer: string
 type CreditPlan = { code: string; name: string; description: string; credits: number; amount: string; currency: string }
 type PosterTheme = { id: string; title: string; desc: string; kicker: string; accent: string; panel: string; tag: string; meta: string }
 type MarketingTemplate = { id: string; title: string; desc: string; theme: string; copy: { kicker: string; title: string; subtitle: string; tags: string } }
-type PipelineStage = { id: string; label: string; status: 'pending' | 'active' | 'completed' | 'failed'; detail: string }
+type PipelineStage = { id: string; label: string; status: 'pending' | 'active' | 'completed' | 'failed'; detail: string; startedAt?: number; endedAt?: number; durationMs?: number }
 type RecognitionHistory = { id: string; image_url?: string; name: string; origin: string; spec: string; tags: string[]; recognition_confidence?: number; recognition_evidence?: string; created_at: string }
 
 const API_BASE = '/api'
@@ -42,6 +42,9 @@ const isGenerating = ref(false)
 const isRecognizing = ref(false)
 const notice = ref('')
 const pipelineVisible = ref(false)
+const pipelineTaskId = ref('')
+const pipelineError = ref('')
+const pipelineDiagnostics = ref<string[]>([])
 const pipelineStages = ref<PipelineStage[]>([
   { id: 'understanding', label: '商品理解 Agent', status: 'pending', detail: '等待商品信息' },
   { id: 'usage', label: '图片用途识别', status: 'pending', detail: '等待用途' },
@@ -508,17 +511,21 @@ async function generate() {
       throw new Error(error.detail || '生成失败，请稍后重试')
     }
     const queued = await response.json()
+    pipelineTaskId.value = queued.id
     notice.value = '任务已提交，后台正在生成，页面不会因等待超时而中断…'
     const data = await pollGeneration(queued.id)
     if (Array.isArray(data.assets) && data.assets.length) results.value = data.assets
     completePipeline('model', '图片模型已返回素材')
     await advancePipeline('quality', '正在检查商品身份、构图和伪影')
     const quality = data.pipeline?.quality_check
+    pipelineDiagnostics.value = quality?.reasons || []
     completePipeline('quality', quality?.passed ? `合格${quality.retries ? ` · 自动重生成 ${quality.retries} 次` : ''}` : '已完成检查，请复核结果')
     await loadWorkspaceData()
     await loadBilling()
     notice.value = '生成完成，素材已准备好'
   } catch (error) {
+    pipelineError.value = error instanceof Error ? error.message : '生成任务异常'
+    pipelineStages.value = pipelineStages.value.map((stage) => stage.status === 'active' ? { ...stage, status: 'failed', detail: pipelineError.value } : stage)
     notice.value = staticPreview ? '静态预览模式：这里会连接真实 AI 生图服务' : (error instanceof Error ? error.message : '生成失败，请稍后重试')
   } finally {
     isGenerating.value = false
@@ -554,19 +561,24 @@ function applyMarketingTemplate(template: MarketingTemplate) {
 }
 
 function resetPipeline() {
-  pipelineStages.value = pipelineStages.value.map((stage) => ({ ...stage, status: 'pending', detail: stage.id === 'understanding' ? '等待商品信息' : '等待处理' }))
+  pipelineTaskId.value = ''
+  pipelineError.value = ''
+  pipelineDiagnostics.value = []
+  pipelineStages.value = pipelineStages.value.map((stage) => ({ ...stage, status: 'pending', detail: stage.id === 'understanding' ? '等待商品信息' : '等待处理', startedAt: undefined, endedAt: undefined, durationMs: undefined }))
   pipelineVisible.value = true
 }
 
 async function advancePipeline(id: string, detail: string) {
   const index = pipelineStages.value.findIndex((stage) => stage.id === id)
   if (index < 0) return
-  pipelineStages.value = pipelineStages.value.map((stage, current) => current < index ? { ...stage, status: 'completed' } : current === index ? { ...stage, status: 'active', detail } : stage)
+  const now = performance.now()
+  pipelineStages.value = pipelineStages.value.map((stage, current) => current < index ? { ...stage, status: 'completed', endedAt: stage.endedAt || now, durationMs: stage.durationMs ?? (stage.startedAt ? Math.round(now - stage.startedAt) : undefined) } : current === index ? { ...stage, status: 'active', detail, startedAt: stage.startedAt || now } : stage)
   await nextTick()
 }
 
 function completePipeline(id: string, detail: string) {
-  pipelineStages.value = pipelineStages.value.map((stage) => stage.id === id ? { ...stage, status: 'completed', detail } : stage)
+  const now = performance.now()
+  pipelineStages.value = pipelineStages.value.map((stage) => stage.id === id ? { ...stage, status: 'completed', detail, endedAt: now, durationMs: stage.durationMs ?? (stage.startedAt ? Math.round(now - stage.startedAt) : 0) } : stage)
 }
 
 async function pollGeneration(generationId: string) {
@@ -575,11 +587,22 @@ async function pollGeneration(generationId: string) {
     const response = await fetch(`${API_BASE}/generations/${generationId}`, { headers: authHeaders() })
     if (!response.ok) throw new Error('读取生成任务状态失败')
     const task = await response.json()
+    pipelineTaskId.value = generationId
+    const remoteStages = task.pipeline?.stages || {}
+    for (const [stageId, remote] of Object.entries(remoteStages) as [string, any][]) {
+      if (remote?.ended_at && remote?.started_at) {
+        const start = Date.parse(remote.started_at); const end = Date.parse(remote.ended_at)
+        pipelineStages.value = pipelineStages.value.map((stage) => stage.id === stageId ? { ...stage, durationMs: Math.max(0, end - start), startedAt: start, endedAt: end } : stage)
+      }
+    }
     if (task.status === 'processing') {
       await advancePipeline('model', '后台任务运行中，避免页面超时')
     }
     if (task.status === 'completed') return task
-    if (task.status === 'failed') throw new Error(task.error_message || '后台生图失败，额度已退回')
+    if (task.status === 'failed') {
+      pipelineError.value = task.error_message || task.pipeline?.error || '后台生图失败，额度已退回'
+      throw new Error(pipelineError.value)
+    }
   }
   throw new Error('生成任务等待超时，请稍后在生成记录中查看')
 }
@@ -787,7 +810,7 @@ async function downloadComposedAsset(asset: Result) {
               <div class="parameter-group"><span>发布渠道</span><div class="parameter-options"><button v-for="item in platforms" :key="item.id" :class="{ chosen: activePlatform === item.id }" @click="activePlatform = item.id">{{ item.title }}</button></div></div>
             </div>
             <button class="generate-btn" :class="{ loading: isGenerating }" @click="generate"><span>{{ isGenerating ? '✦ 正在生成，请稍候…' : '✦ 一键生成整套图片　→' }}</span></button><p class="time-tip">预计耗时 30-60 秒</p>
-            <div v-if="pipelineVisible" class="pipeline-panel"><div class="pipeline-panel-head"><b>生成管线</b><small>{{ isGenerating ? '实时处理中' : '本次生成记录' }}</small></div><div class="pipeline-track"><div v-for="stage in pipelineStages" :key="stage.id" class="pipeline-stage" :class="stage.status"><i>{{ stage.status === 'completed' ? '✓' : stage.status === 'active' ? '⋯' : '·' }}</i><div><b>{{ stage.label }}</b><small>{{ stage.detail }}</small></div></div></div></div>
+            <div v-if="pipelineVisible" class="pipeline-panel"><div class="pipeline-panel-head"><b>生成管线</b><small>{{ isGenerating ? '实时处理中' : '本次生成记录' }}</small></div><div class="pipeline-track"><div v-for="stage in pipelineStages" :key="stage.id" class="pipeline-stage" :class="stage.status"><i>{{ stage.status === 'completed' ? '✓' : stage.status === 'active' ? '⋯' : '·' }}</i><div><b>{{ stage.label }}</b><small>{{ stage.detail }}<template v-if="stage.durationMs != null"> · {{ stage.durationMs >= 1000 ? `${(stage.durationMs / 1000).toFixed(1)}s` : `${stage.durationMs}ms` }}`</template></small></div></div></div><div v-if="pipelineTaskId || pipelineError || pipelineDiagnostics.length" class="pipeline-diagnostics"><div><b>排查信息</b><small v-if="pipelineTaskId">任务 {{ pipelineTaskId }}</small></div><p v-if="pipelineError" class="diagnostic-error">{{ pipelineError }}</p><ul v-if="pipelineDiagnostics.length"><li v-for="item in pipelineDiagnostics" :key="item">{{ item }}</li></ul></div></div>
           </section>
 
           <section class="panel result-panel">

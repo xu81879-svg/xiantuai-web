@@ -57,6 +57,7 @@ class Generation(Base):
     style: Mapped[str] = mapped_column(String(40), default="natural")
     status: Mapped[str] = mapped_column(String(30), default="completed")
     assets: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    pipeline_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 

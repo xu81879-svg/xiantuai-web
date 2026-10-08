@@ -174,6 +174,27 @@ def product_reference_path(product: Product) -> Path | None:
     return candidate if candidate.parent == UPLOAD_DIR.resolve() and candidate.is_file() else None
 
 
+def pipeline_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def persist_pipeline_state(db: Session, generation: Generation, state: dict[str, Any]) -> None:
+    generation.pipeline_state = state
+    db.commit()
+
+
+def dispatch_generation_task(generation_id: str, product_id: str, options: dict[str, str]) -> str:
+    if os.getenv("CELERY_BROKER_URL") or os.getenv("REDIS_URL"):
+        try:
+            from .tasks import run_generation_task
+            run_generation_task.delay(generation_id, product_id, options)
+            return "celery"
+        except Exception:
+            logger.exception("pipeline.celery_dispatch_failed generation=%s; falling back to thread", generation_id)
+    threading.Thread(target=run_generation_pipeline, args=(generation_id, product_id, options), daemon=True, name=f"pipeline-{generation_id[:8]}").start()
+    return "thread"
+
+
 def run_generation_pipeline(generation_id: str, product_id: str, options: dict[str, str]) -> None:
     """Run the long Qwen pipeline outside the HTTP request lifecycle."""
     with SessionLocal() as db:
@@ -182,11 +203,14 @@ def run_generation_pipeline(generation_id: str, product_id: str, options: dict[s
         if not generation or not product:
             logger.error("pipeline.task_missing generation=%s product=%s", generation_id, product_id)
             return
+        started_at = pipeline_now()
+        state: dict[str, Any] = {"status": "processing", "worker": "celery" if os.getenv("CELERY_BROKER_URL") or os.getenv("REDIS_URL") else "thread", "started_at": started_at, "current_stage": "model", "stages": {"model": {"status": "active", "started_at": started_at}}}
         generation.status = "processing"
+        generation.pipeline_state = state
         db.commit()
         quality_report: dict[str, Any] = {"passed": True, "retries": 0, "reasons": [], "source": "not_run"}
-        plan = compile_generation_plan(product.name, product.origin, product.spec, product.tags, options["usage"])
         try:
+            plan = compile_generation_plan(product.name, product.origin, product.spec, product.tags, options["usage"])
             primary_image = None
             if is_qwen_configured():
                 reference_image = product_reference_path(product)
@@ -201,16 +225,30 @@ def run_generation_pipeline(generation_id: str, product_id: str, options: dict[s
                         break
                     logger.warning("pipeline.retry task=%s reason=quality_check_failed", generation_id)
             pipeline = {"product_understanding": {"category": plan.category, "selling_points": plan.selling_points, "structure": plan.structure}, "usage_identification": plan.image_usage, "engine": plan.engine, "prompt_compiler": "compiled", "quality_check": quality_report}
+            finished_at = pipeline_now()
+            state["status"] = "completed"
+            state["current_stage"] = "completed"
+            state["finished_at"] = finished_at
+            state["stages"]["model"] = {"status": "completed", "started_at": started_at, "ended_at": finished_at, "detail": "图片模型已返回素材"}
+            state["stages"]["quality"] = {"status": "completed", "started_at": finished_at, "ended_at": finished_at, "detail": "质量检查完成", "result": quality_report}
+            pipeline["state"] = state
             assets = make_assets(product.name, primary_image, product.origin, product.spec, product.tags)
             if assets:
                 assets[0]["pipeline"] = pipeline
             generation.assets = assets
+            generation.pipeline_state = state
             generation.status = "completed"
             db.commit()
             logger.info("pipeline.completed task=%s status=completed", generation_id)
-        except QwenError as exc:
+        except Exception as exc:
             generation.status = "failed"
             generation.error_message = str(exc)[:500]
+            state["status"] = "failed"
+            state["current_stage"] = "failed"
+            state["finished_at"] = pipeline_now()
+            state["error"] = str(exc)[:500]
+            state["stages"]["model"] = {"status": "failed", "started_at": started_at, "ended_at": state["finished_at"], "detail": str(exc)[:200]}
+            generation.pipeline_state = state
             user = db.get(User, generation.owner_id)
             if user:
                 user.credit_balance += 1
@@ -490,26 +528,27 @@ def create_generation(payload: GenerationPayload, user: User = Depends(current_u
         raise HTTPException(status_code=422, detail="请提供商品信息")
     assets: list[dict[str, Any]] = []
     user.credit_balance -= 1
-    generation = Generation(owner_id=user.id, product_id=product.id, usage=payload.usage, style=payload.style, status="queued", assets=assets)
+    worker = "celery" if os.getenv("CELERY_BROKER_URL") or os.getenv("REDIS_URL") else "thread"
+    generation = Generation(owner_id=user.id, product_id=product.id, usage=payload.usage, style=payload.style, status="queued", assets=assets, pipeline_state={"status": "queued", "worker": worker, "queued_at": pipeline_now(), "current_stage": "queued", "stages": {}})
     db.add(generation)
     db.add(CreditTransaction(user_id=user.id, amount=-1, balance_after=user.credit_balance, reason="generation"))
     db.commit()
     db.refresh(generation)
-    threading.Thread(target=run_generation_pipeline, args=(generation.id, product.id, payload.model_dump(exclude={"product", "product_id"})), daemon=True, name=f"pipeline-{generation.id[:8]}").start()
-    return {"id": generation.id, "status": generation.status, "usage": generation.usage, "style": generation.style, "product": serialize_product(product), "assets": [], "pipeline": {"status": "queued"}}
+    dispatch_generation_task(generation.id, product.id, payload.model_dump(exclude={"product", "product_id"}))
+    return {"id": generation.id, "status": generation.status, "usage": generation.usage, "style": generation.style, "product": serialize_product(product), "assets": [], "pipeline": generation.pipeline_state}
 
 @app.get("/api/generations/{generation_id}")
 def get_generation(generation_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     generation = db.scalar(select(Generation).where(Generation.id == generation_id, Generation.owner_id == user.id))
     if not generation:
         raise HTTPException(status_code=404, detail="生成任务不存在")
-    pipeline = (generation.assets[0].get("pipeline") if generation.assets else None) or {"status": generation.status}
+    pipeline = (generation.assets[0].get("pipeline") if generation.assets else None) or generation.pipeline_state or {"status": generation.status}
     return {"id": generation.id, "status": generation.status, "usage": generation.usage, "style": generation.style, "product": serialize_product(generation.product) if generation.product else None, "assets": generation.assets or [], "pipeline": pipeline, "error_message": generation.error_message}
 
 @app.get("/api/generations")
 def list_generations(user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     items = db.scalars(select(Generation).where(Generation.owner_id == user.id).order_by(Generation.created_at.desc())).all()
-    return {"items": [{"id": item.id, "status": item.status, "usage": item.usage, "style": item.style, "count": len(item.assets or []), "assets": item.assets or [], "product_id": item.product_id, "product_name": item.product.name if item.product else None, "created_at": item.created_at.isoformat() if item.created_at else None} for item in items]}
+    return {"items": [{"id": item.id, "status": item.status, "usage": item.usage, "style": item.style, "count": len(item.assets or []), "assets": item.assets or [], "pipeline": item.pipeline_state, "product_id": item.product_id, "product_name": item.product.name if item.product else None, "created_at": item.created_at.isoformat() if item.created_at else None} for item in items]}
 
 @app.get("/api/assets")
 def list_assets(q: str | None = Query(default=None, max_length=80), limit: int = Query(default=100, ge=1, le=200), offset: int = Query(default=0, ge=0), user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, Any]:

@@ -404,5 +404,6 @@ def quality_check_image(image_path: Path, product_name: str, usage: str) -> dict
         if not isinstance(reasons, list): reasons = [str(reasons)]
         return {"passed": bool(result.get("passed")), "reasons": [str(reason) for reason in reasons[:3]], "source": "vision", "width": width, "height": height}
     except (QwenError, KeyError, IndexError, TypeError, ValueError) as exc:
-        # Quality inspection must never make a healthy generation unavailable.
-        return {"passed": True, "reasons": [f"质量检查降级：{exc}"], "source": "fallback", "width": width, "height": height}
+        # An unavailable/invalid vision verdict is not proof of quality; let the
+        # pipeline retry once and expose the unresolved issue to the operator.
+        return {"passed": False, "reasons": [f"质量检查降级：{exc}"], "source": "fallback", "width": width, "height": height}

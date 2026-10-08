@@ -40,6 +40,8 @@ GitHub Actions 负责提交门禁，不把生产密钥写进 Git。Railway 负�
 | `QWEN_IMAGE_SIZE` | `1024*1024` | 生成尺寸 |
 | `QWEN_TIMEOUT_SECONDS` | `45` | 外部 API 超时 |
 | `QWEN_MOCK_FALLBACK` | `false` | 生产禁止静默 Mock 降级 |
+| `CELERY_BROKER_URL` | Railway Redis 的 `REDIS_URL` 引用 | 配置后生成任务进入 Celery，不再依赖 Web 实例内线程 |
+| `CELERY_RESULT_BACKEND` | 同 `CELERY_BROKER_URL` | 保存 Celery 任务结果；业务状态仍写入 PostgreSQL |
 | `PAYPAL_BASE_URL` | `https://api-m.paypal.com` | 生产环境；沙盒使用 `https://api-m.sandbox.paypal.com` |
 | `PAYPAL_CLIENT_ID` | Railway Secret | PayPal REST 应用 Client ID |
 | `PAYPAL_CLIENT_SECRET` | Railway Secret | PayPal REST 应用 Secret |
@@ -49,6 +51,16 @@ GitHub Actions 负责提交门禁，不把生产密钥写进 Git。Railway 负�
 | `PAYPAL_MOCK_MODE` | `false` | 生产必须关闭 |
 
 生产变量模板见根目录 `railway.env.example`。其中的中文占位值只能复制后替换，不能直接作为生产值。应用会清理 URL 两侧意外的单/双引号；生产环境如果没有解析出 `DATABASE_URL` 会直接拒绝启动，不再静默使用 SQLite。
+
+## 多实例异步生图 Worker
+
+当前代码支持两种执行器：未配置 Redis 时使用单实例线程回退；配置 `CELERY_BROKER_URL` 或 `REDIS_URL` 后，Web Service 会把任务投递到 Celery，独立 Worker 负责千问生图、质量检查和自动重生成。为支持多实例部署，在同一 Railway Project 中新增 Redis Service，并新增一个 Worker Service，使用同一镜像、同一变量，启动命令为：
+
+```bash
+cd /app/backend && celery -A worker.celery_app worker --loglevel=INFO --concurrency=2
+```
+
+把 Redis Service 的 `REDIS_URL` 通过 Add Reference 注入 Web 和 Worker 的 `CELERY_BROKER_URL`、`CELERY_RESULT_BACKEND`。切换后观察 Worker 日志中的 `xiantu.run_generation_pipeline`，并确认轮询接口返回 `pipeline.worker=celery`。
 
 ## 数据库迁移顺序
 
