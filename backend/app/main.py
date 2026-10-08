@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import logging
+import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,7 +11,7 @@ from typing import Any, AsyncIterator
 from uuid import uuid4
 
 import jwt
-from fastapi import BackgroundTasks, Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -475,7 +476,7 @@ def delete_product(product_id: str, user: User = Depends(current_user), db: Sess
     return {"deleted": True, "id": product_id}
 
 @app.post("/api/generations")
-def create_generation(payload: GenerationPayload, background_tasks: BackgroundTasks, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+def create_generation(payload: GenerationPayload, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     if user.credit_balance < 1:
         raise HTTPException(status_code=402, detail="生成额度不足，请购买额度包")
     product = db.get(Product, payload.product_id) if payload.product_id else None
@@ -494,7 +495,7 @@ def create_generation(payload: GenerationPayload, background_tasks: BackgroundTa
     db.add(CreditTransaction(user_id=user.id, amount=-1, balance_after=user.credit_balance, reason="generation"))
     db.commit()
     db.refresh(generation)
-    background_tasks.add_task(run_generation_pipeline, generation.id, product.id, payload.model_dump(exclude={"product", "product_id"}))
+    threading.Thread(target=run_generation_pipeline, args=(generation.id, product.id, payload.model_dump(exclude={"product", "product_id"})), daemon=True, name=f"pipeline-{generation.id[:8]}").start()
     return {"id": generation.id, "status": generation.status, "usage": generation.usage, "style": generation.style, "product": serialize_product(product), "assets": [], "pipeline": {"status": "queued"}}
 
 @app.get("/api/generations/{generation_id}")
