@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +25,8 @@ from .models import CreditOrder, CreditPlan, CreditTransaction, Generation, Help
 from .paypal import PayPalError, approval_url, capture_order, client_id as paypal_client_id, configured as paypal_configured, create_order as paypal_create_order, mock_mode as paypal_mock_mode, show_order, verify_webhook_signature
 from .qwen import QwenError, allow_mock_fallback, compile_generation_plan, generate_image, is_qwen_configured, persist_remote_image, quality_check_image, recognize_product as qwen_recognize_product
 from .security import create_access_token, hash_password, read_user_id, secret_key, verify_password
+
+logger = logging.getLogger("xiantu.pipeline")
 
 APP_DIR = Path(__file__).resolve().parent.parent
 PROJECT_DIR = APP_DIR.parent
@@ -446,12 +449,15 @@ def create_generation(payload: GenerationPayload, user: User = Depends(current_u
         try:
             reference_image = product_reference_path(product)
             for attempt in range(2):
+                logger.info("pipeline.generate attempt=%s product=%s usage=%s engine=%s", attempt + 1, product.name, payload.usage, pipeline_plan.engine)
                 remote_image = generate_image(product.name, product.origin, product.spec, payload.usage, payload.style, payload.tone, payload.composition, payload.background, payload.platform, reference_image=reference_image, tags=product.tags)
                 primary_image = persist_remote_image(remote_image, UPLOAD_DIR)
                 quality_report = quality_check_image(UPLOAD_DIR / Path(primary_image).name, product.name, payload.usage)
                 quality_report["retries"] = attempt
+                logger.info("pipeline.quality passed=%s source=%s retries=%s reasons=%s", quality_report.get("passed"), quality_report.get("source"), quality_report.get("retries"), " | ".join(quality_report.get("reasons", [])))
                 if quality_report.get("passed") or attempt == 1:
                     break
+                logger.warning("pipeline.retry reason=quality_check_failed product=%s", product.name)
         except QwenError as exc:
             if not allow_mock_fallback():
                 raise HTTPException(status_code=502, detail=f"千问生图失败：{exc}") from exc

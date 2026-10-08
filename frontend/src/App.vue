@@ -15,6 +15,7 @@ type HelpItem = { id: string; category: string; question: string; answer: string
 type CreditPlan = { code: string; name: string; description: string; credits: number; amount: string; currency: string }
 type PosterTheme = { id: string; title: string; desc: string; kicker: string; accent: string; panel: string; tag: string; meta: string }
 type MarketingTemplate = { id: string; title: string; desc: string; theme: string; copy: { kicker: string; title: string; subtitle: string; tags: string } }
+type PipelineStage = { id: string; label: string; status: 'pending' | 'active' | 'completed' | 'failed'; detail: string }
 type RecognitionHistory = { id: string; image_url?: string; name: string; origin: string; spec: string; tags: string[]; recognition_confidence?: number; recognition_evidence?: string; created_at: string }
 
 const API_BASE = '/api'
@@ -40,6 +41,15 @@ const posterCopy = ref({ kicker: '', title: '', subtitle: '', tags: '' })
 const isGenerating = ref(false)
 const isRecognizing = ref(false)
 const notice = ref('')
+const pipelineVisible = ref(false)
+const pipelineStages = ref<PipelineStage[]>([
+  { id: 'understanding', label: '商品理解 Agent', status: 'pending', detail: '等待商品信息' },
+  { id: 'usage', label: '图片用途识别', status: 'pending', detail: '等待用途' },
+  { id: 'engine', label: '版式 / 场景 / 创意引擎', status: 'pending', detail: '等待引擎' },
+  { id: 'compiler', label: 'Prompt Compiler', status: 'pending', detail: '等待提示词编译' },
+  { id: 'model', label: '图片模型', status: 'pending', detail: '等待千问生成' },
+  { id: 'quality', label: '质量检查 Agent', status: 'pending', detail: '等待检查' },
+])
 const products = ref<Product[]>([])
 const libraryAssets = ref<Result[]>([])
 const generations = ref<Generation[]>([])
@@ -464,8 +474,18 @@ async function recognize(file: File) {
 async function generate() {
   if (isGenerating.value) return
   isGenerating.value = true
+  resetPipeline()
   notice.value = 'AI 正在根据商品信息生成整套素材…'
   try {
+    await advancePipeline('understanding', `${product.value.name} · ${product.value.tags.slice(0, 2).join('、') || '待提取卖点'}`)
+    completePipeline('understanding', `${product.value.name} 已解析`)
+    await advancePipeline('usage', activeUsage.value === 'hero' ? '主图' : activeUsage.value === 'detail' ? '详情图' : '营销图')
+    completePipeline('usage', '用途已确定')
+    await advancePipeline('engine', activeUsage.value === 'hero' ? '版式引擎' : activeUsage.value === 'detail' ? '场景引擎' : '创意引擎')
+    completePipeline('engine', '引擎已选择')
+    await advancePipeline('compiler', '正在编译商品结构与视觉约束')
+    completePipeline('compiler', 'Prompt 已编译')
+    await advancePipeline('model', '千问图片模型生成中')
     if (staticPreview) {
       if (creditBalance.value < 1) throw new Error('生成额度不足，请购买额度包')
       await new Promise((resolve) => window.setTimeout(resolve, 500))
@@ -473,6 +493,8 @@ async function generate() {
       results.value = results.value.map((asset) => ({ ...asset, title: asset.kind === 'main' ? product.value.name : asset.title }))
       generations.value = [{ ...generations.value[0], assets: results.value, count: results.value.length, product_name: product.value.name, created_at: new Date().toISOString() }]
       libraryAssets.value = results.value.map((asset, index) => ({ ...asset, id: `preview-asset-${index + 1}`, product_name: product.value.name }))
+      completePipeline('model', '预览素材已生成')
+      completePipeline('quality', '预览模式：跳过视觉质检')
       notice.value = `预览生成完成，已扣除 1 次额度，剩余 ${creditBalance.value} 次`
       return
     }
@@ -487,6 +509,10 @@ async function generate() {
     }
     const data = await response.json()
     if (Array.isArray(data.assets) && data.assets.length) results.value = data.assets
+    completePipeline('model', '图片模型已返回素材')
+    await advancePipeline('quality', '正在检查商品身份、构图和伪影')
+    const quality = data.pipeline?.quality_check
+    completePipeline('quality', quality?.passed ? `合格${quality.retries ? ` · 自动重生成 ${quality.retries} 次` : ''}` : '已完成检查，请复核结果')
     await loadWorkspaceData()
     await loadBilling()
     notice.value = '生成完成，素材已准备好'
@@ -523,6 +549,22 @@ function applyMarketingTemplate(template: MarketingTemplate) {
   activePosterTheme.value = template.theme
   posterCopy.value = { ...template.copy, title: template.copy.title || product.value.name }
   notice.value = `已切换至「${template.title}」海报排版`
+}
+
+function resetPipeline() {
+  pipelineStages.value = pipelineStages.value.map((stage) => ({ ...stage, status: 'pending', detail: stage.id === 'understanding' ? '等待商品信息' : '等待处理' }))
+  pipelineVisible.value = true
+}
+
+async function advancePipeline(id: string, detail: string) {
+  const index = pipelineStages.value.findIndex((stage) => stage.id === id)
+  if (index < 0) return
+  pipelineStages.value = pipelineStages.value.map((stage, current) => current < index ? { ...stage, status: 'completed' } : current === index ? { ...stage, status: 'active', detail } : stage)
+  await nextTick()
+}
+
+function completePipeline(id: string, detail: string) {
+  pipelineStages.value = pipelineStages.value.map((stage) => stage.id === id ? { ...stage, status: 'completed', detail } : stage)
 }
 
 function loadImage(url: string): Promise<HTMLImageElement> {
@@ -728,6 +770,7 @@ async function downloadComposedAsset(asset: Result) {
               <div class="parameter-group"><span>发布渠道</span><div class="parameter-options"><button v-for="item in platforms" :key="item.id" :class="{ chosen: activePlatform === item.id }" @click="activePlatform = item.id">{{ item.title }}</button></div></div>
             </div>
             <button class="generate-btn" :class="{ loading: isGenerating }" @click="generate"><span>{{ isGenerating ? '✦ 正在生成，请稍候…' : '✦ 一键生成整套图片　→' }}</span></button><p class="time-tip">预计耗时 30-60 秒</p>
+            <div v-if="pipelineVisible" class="pipeline-panel"><div class="pipeline-panel-head"><b>生成管线</b><small>{{ isGenerating ? '实时处理中' : '本次生成记录' }}</small></div><div class="pipeline-track"><div v-for="stage in pipelineStages" :key="stage.id" class="pipeline-stage" :class="stage.status"><i>{{ stage.status === 'completed' ? '✓' : stage.status === 'active' ? '⋯' : '·' }}</i><div><b>{{ stage.label }}</b><small>{{ stage.detail }}</small></div></div></div></div>
           </section>
 
           <section class="panel result-panel">
