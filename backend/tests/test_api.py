@@ -1,4 +1,5 @@
 import os
+import time
 
 os.environ["DATABASE_URL"] = "sqlite:///./test-mvp.db"
 os.environ["AUTO_CREATE_SCHEMA"] = "true"
@@ -26,8 +27,14 @@ def test_auth_and_generation_flow():
         generation = client.post("/api/generations", headers=headers, json={"product": {"name": "测试樱桃", "origin": "山东", "spec": "500g", "tags": ["新鲜"]}, "usage": "hero", "style": "natural"})
         assert generation.status_code == 200
         assert generation.json()["status"] == "queued"
-        task = client.get(f"/api/generations/{generation.json()['id']}", headers=headers)
-        assert task.status_code == 200
+        task = None
+        for _ in range(20):
+            task = client.get(f"/api/generations/{generation.json()['id']}", headers=headers)
+            assert task.status_code == 200
+            if task.json()["status"] in {"completed", "failed"}:
+                break
+            time.sleep(0.05)
+        assert task is not None
         assert task.json()["status"] == "completed"
         assert len(task.json()["assets"]) == 5
         generation_items = client.get("/api/generations", headers=headers).json()["items"]
