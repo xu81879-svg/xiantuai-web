@@ -14,6 +14,7 @@ type TemplateItem = { id: string; title: string; category: string; description: 
 type HelpItem = { id: string; category: string; question: string; answer: string }
 type CreditPlan = { code: string; name: string; description: string; credits: number; amount: string; currency: string }
 type PosterTheme = { id: string; title: string; desc: string; kicker: string; accent: string; panel: string; tag: string; meta: string }
+type RecognitionHistory = { id: string; image_url?: string; name: string; origin: string; spec: string; tags: string[]; recognition_confidence?: number; recognition_evidence?: string; created_at: string }
 
 const API_BASE = '/api'
 const staticPreview = import.meta.env.VITE_STATIC_PREVIEW === 'true'
@@ -56,6 +57,12 @@ const helpSearch = ref('')
 const fileInput = ref<HTMLInputElement | null>(null)
 const productImage = ref('https://images.unsplash.com/photo-1528825871115-3581a5387919?auto=format&fit=crop&w=680&q=85')
 const product = ref<Product>({ name: '崂山大樱桃', origin: '山东·青岛崂山', spec: '500g', tags: ['果大', '脆甜', '新鲜', '当季'] })
+const tagInput = ref('')
+const showTagInput = ref(false)
+const recognitionHistory = ref<RecognitionHistory[]>([])
+const showRecognitionHistory = ref(false)
+const quickCorrectionOptions = ['崂山杏', '桃子', '番茄', '车厘子', '苹果', '梨']
+const recognitionHistoryKey = 'xiantu_recognition_history'
 
 const usages: Usage[] = [
   { id: 'hero', icon: '▣', title: '电商主图', desc: '白底 / 清晰 / 高转化' },
@@ -152,6 +159,7 @@ function logout() {
 }
 
 onMounted(async () => {
+  loadRecognitionHistory()
   if (!authToken.value) return
   try {
     const response = await fetch(`${API_BASE}/auth/me`, { headers: authHeaders() })
@@ -351,6 +359,55 @@ function toggleTag(tag: string) {
   product.value.tags = tags.includes(tag) ? tags.filter((item) => item !== tag) : [...tags, tag]
 }
 
+function addTag() {
+  const tag = tagInput.value.trim()
+  if (!tag) { notice.value = '请输入卖点后再添加'; return }
+  if (!product.value.tags.includes(tag)) product.value.tags = [...product.value.tags, tag].slice(0, 8)
+  tagInput.value = ''
+  showTagInput.value = false
+}
+
+function loadRecognitionHistory() {
+  try {
+    recognitionHistory.value = JSON.parse(localStorage.getItem(recognitionHistoryKey) || '[]')
+  } catch {
+    recognitionHistory.value = []
+  }
+}
+
+function persistRecognitionHistory() {
+  localStorage.setItem(recognitionHistoryKey, JSON.stringify(recognitionHistory.value.slice(0, 12)))
+}
+
+function recordRecognition(data: Partial<Product>) {
+  const record: RecognitionHistory = {
+    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    image_url: data.image_url || product.value.image_url || undefined,
+    name: data.name || '生鲜商品',
+    origin: data.origin || '',
+    spec: data.spec || '',
+    tags: data.tags || [],
+    recognition_confidence: data.recognition_confidence,
+    recognition_evidence: data.recognition_evidence,
+    created_at: new Date().toISOString(),
+  }
+  recognitionHistory.value = [record, ...recognitionHistory.value.filter((item) => item.image_url !== record.image_url || item.name !== record.name)]
+  persistRecognitionHistory()
+}
+
+function applyRecognition(record: RecognitionHistory) {
+  product.value = { ...product.value, name: record.name, origin: record.origin, spec: record.spec, tags: [...record.tags], image_url: record.image_url, recognition_confidence: record.recognition_confidence, recognition_evidence: record.recognition_evidence }
+  if (record.image_url) productImage.value = record.image_url
+  activeNav.value = '首页'
+  notice.value = `已载入识别记录「${record.name}」`
+}
+
+function quickCorrect(name: string) {
+  product.value = { ...product.value, name, recognition_confidence: 1, recognition_evidence: '已由商家一键校正' }
+  recordRecognition(product.value)
+  notice.value = `已一键校正为「${name}」`
+}
+
 function triggerUpload() {
   if (isRecognizing.value) return
   fileInput.value?.click()
@@ -380,6 +437,8 @@ async function recognize(file: File) {
     }
     const data = await response.json()
     product.value = { ...product.value, ...data, tags: data.tags ?? product.value.tags }
+    if (data.image_url) { product.value.image_url = data.image_url; productImage.value = data.image_url }
+    recordRecognition(product.value)
     const confidence = typeof data.recognition_confidence === 'number' ? data.recognition_confidence : 0
     notice.value = confidence > 0 && confidence < 0.78 ? `AI 识别为「${data.name}」，但置信度较低，请重点复核品类` : 'AI 已识别商品信息，你可以继续编辑'
   } catch (error) {
@@ -627,10 +686,13 @@ async function downloadComposedAsset(asset: Result) {
             <input ref="fileInput" type="file" accept="image/*" hidden @change="handleFile" />
             <div class="section-label">商品信息 <small>（AI自动识别，可编辑）</small></div>
             <label class="field"><span>商品名称</span><input v-model="product.name" maxlength="30" /><i>{{ product.name.length }}/30</i></label>
-            <div class="field tag-field"><span>卖点标签</span><div class="tags"><button v-for="tag in ['果大','脆甜','新鲜','当季']" :key="tag" :class="{ chosen: product.tags.includes(tag) }" @click="toggleTag(tag)">{{ tag }}</button><button class="plus" @click="product.tags.push('精选')">＋</button></div></div>
+            <div class="field tag-field"><span>卖点标签</span><div class="tags"><button v-for="tag in product.tags" :key="tag" class="chosen" @click="toggleTag(tag)">{{ tag }} ×</button><button class="plus" aria-label="添加卖点" @click="showTagInput = !showTagInput">＋</button></div><div v-if="showTagInput" class="tag-add-row"><input v-model="tagInput" maxlength="12" placeholder="输入卖点，如：果面光泽" @keyup.enter="addTag" /><button @click="addTag">添加</button></div></div>
             <label class="field"><span>产地</span><input v-model="product.origin" /></label>
             <label class="field"><span>规格</span><input v-model="product.spec" /></label>
             <div class="ai-hint" :class="{ recognizing: isRecognizing, 'needs-review': !isRecognizing && product.recognition_confidence && product.recognition_confidence < 0.78 }">{{ isRecognizing ? '✦　AI 正在分析图片，请稍候…' : (product.recognition_confidence && product.recognition_confidence < 0.78 ? '⚠　识别置信度较低，请确认商品名称' : '♧　AI 已智能识别商品信息，您也可以手动修改') }}<br /><small>{{ isRecognizing ? '通常需要 5 秒左右，完成后可继续编辑。' : (product.recognition_evidence || '让图片更符合你的需求。') }}</small></div>
+            <div class="quick-correction"><span>一键校正</span><button v-for="name in quickCorrectionOptions" :key="name" @click="quickCorrect(name)">{{ name }}</button></div>
+            <div class="recognition-history-tools"><button @click="showRecognitionHistory = !showRecognitionHistory">◷　{{ showRecognitionHistory ? '收起识别历史' : `识别历史（${recognitionHistory.length}）` }}</button></div>
+            <div v-if="showRecognitionHistory" class="recognition-history"><div v-if="recognitionHistory.length" v-for="record in recognitionHistory.slice(0, 6)" :key="record.id" class="recognition-history-item"><div><b>{{ record.name }}</b><small>{{ new Date(record.created_at).toLocaleString('zh-CN') }} · {{ record.recognition_confidence ? `${Math.round(record.recognition_confidence * 100)}%` : '待确认' }}</small></div><button @click="applyRecognition(record)">使用</button></div><small v-else class="history-empty">还没有识别记录</small></div>
             <button class="save-product-btn" @click="saveProduct">保存商品信息</button>
           </section>
 

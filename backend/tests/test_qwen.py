@@ -37,6 +37,20 @@ def test_recognize_product_uses_multimodal_model_and_normalizes_result(monkeypat
     assert "杏/桃待确认" in prompt
 
 
+def test_generate_apricot_prompt_emphasizes_fresh_gloss(monkeypatch):
+    captured = {}
+
+    def fake_request(method, url, payload):
+        captured["payload"] = payload
+        return {"output": {"choices": [{"message": {"content": [{"type": "image", "image": "https://example.com/apricot.png"}]}}]}}
+
+    monkeypatch.setattr(qwen, "_request_json", fake_request)
+    qwen.generate_image("崂山杏", "山东·青岛崂山", "500g", "hero", "natural")
+    prompt = captured["payload"]["input"]["messages"][0]["content"][0]["text"]
+    assert "清透光泽与新鲜感" in prompt
+    assert "不能变成蜡质塑料反光" in prompt
+
+
 def test_generate_image_uses_controlled_commercial_prompt(monkeypatch):
     captured = {}
 

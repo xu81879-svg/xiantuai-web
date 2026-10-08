@@ -242,6 +242,13 @@ def generate_image(product_name: str, origin: str, spec: str, usage: str, style:
     }
     product_facts = [fact.strip() for fact in (product_name, origin, spec) if fact and fact.strip()]
     fact_text = "、".join(product_facts) if product_facts else "优质生鲜商品"
+    apricot_detail = ""
+    if "杏" in product_name or "apricot" in product_name.lower():
+        apricot_detail = (
+            "这是杏类商品，重点表现杏果细腻而有真实触感的果面：橙黄至橙红的自然渐变、微微透亮的果皮、"
+            "细小真实的表皮纹理、饱满坚实的圆润体积和自然果缝；使用一条柔和且受控的湿润高光沿果面滑过，"
+            "让果皮呈现刚采摘般的清透光泽与新鲜感，但不能变成蜡质塑料反光、油亮滤镜、桃毛、番茄或红色李子。"
+        )
     prompt = (
         "你是一名顶级食品商业摄影师和电商视觉总监。"
         f"请为‘{fact_text}’生成一张真实、高级、可直接用于电商的商品摄影图。"
@@ -251,7 +258,8 @@ def generate_image(product_name: str, origin: str, spec: str, usage: str, style:
         f"构图：{composition_direction.get(composition, composition_direction['center'])}；"
         f"背景：{background_direction.get(background, background_direction['clean'])}；"
         f"渠道审美：{platform}。"
-        "产品必须是画面唯一主角，形状、大小、颜色、成熟度和表面纹理要自然可信。"
+        + apricot_detail
+        + "产品必须是画面唯一主角，形状、大小、颜色、成熟度和表面纹理要自然可信。"
         "使用商业摄影级三点布光：左前方大面积柔光箱作为主光，极弱的正面补光保留暗部层次，右后方细腻轮廓光勾勒商品边缘；"
         "光线方向必须统一，主体与背景分离清楚，产品底部要有自然接触阴影和轻微环境遮蔽，不能漂浮。"
         "通过真实的体积明暗过渡、边缘高光、材质反射、局部微妙高光和柔和投影表现产品的圆润体积与立体感；"
