@@ -72,8 +72,11 @@ def test_generate_image_uses_controlled_commercial_prompt(monkeypatch):
     assert "negative_prompt" in parameters
     assert "绝对不要生成任何文字" in prompt
     assert "产品必须是画面唯一主角" in prompt
-    assert "商业摄影级三点布光" in prompt
+    assert "圆润体积与立体感" in prompt
     assert "接触阴影" in prompt
+    assert "电商主图硬约束" in prompt
+    assert "无缝纯白或极浅灰背景" in prompt
+    assert "不得切开水果" in prompt
     assert "圆润体积与立体感" in prompt
 
 

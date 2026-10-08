@@ -208,7 +208,7 @@ def recognize_product(image_path: Path, suffix: str) -> dict[str, Any]:
 def generate_image(product_name: str, origin: str, spec: str, usage: str, style: str, tone: str = "fresh", composition: str = "center", background: str = "clean", platform: str = "taobao", reference_image: Path | None = None) -> str:
     """Generate from text, or edit a supplied product image while preserving its identity."""
     usage_direction = {
-        "hero": "正方形电商主图，商品完整可见，占画面约 70%，主体清晰突出，四周保留均衡留白",
+        "hero": "正方形电商目录主图，单一 SKU 商品完整可见，主体居中，占画面约 65%，四周保留均衡留白",
         "detail": "详情页质感特写，靠近商品表现表皮纹理、汁水和新鲜度，背景干净，不切断商品关键部位",
         "promo": "节奏明快但克制的商业摄影，商品仍是唯一主角，使用色彩或道具营造节庆感，不使用促销贴纸",
         "social": "自然的生活方式摄影，场景真实、有呼吸感，商品清晰突出，像高端生活方式杂志而不是广告传单",
@@ -242,6 +242,15 @@ def generate_image(product_name: str, origin: str, spec: str, usage: str, style:
     }
     product_facts = [fact.strip() for fact in (product_name, origin, spec) if fact and fact.strip()]
     fact_text = "、".join(product_facts) if product_facts else "优质生鲜商品"
+    hero_constraints = ""
+    if usage == "hero":
+        hero_constraints = (
+            "【电商主图硬约束】这是商品详情页首图，不是生活方式海报：只展示一个明确的单一 SKU 和同品种主体，"
+            "商品正面或自然三分之四角度，主体居中、轮廓完整、边缘清楚，使用无缝纯白或极浅灰背景；"
+            "不得出现木桌、砧板、餐盘、篮筐、布料、厨房、果园、人物、手、花叶、装饰道具或其他品种水果；"
+            "不得摆成一大堆，不得出现多个视觉焦点，不得切开水果，不得出现剖面、果核、汁水飞溅或食用场景；"
+            "只允许非常轻微的自然接触阴影，保持像品牌电商目录中的干净产品白底图，真实、克制、可直接上架。"
+        )
     apricot_detail = ""
     if "杏" in product_name or "apricot" in product_name.lower():
         apricot_detail = (
@@ -261,6 +270,7 @@ def generate_image(product_name: str, origin: str, spec: str, usage: str, style:
         f"构图：{composition_direction.get(composition, composition_direction['center'])}；"
         f"背景：{background_direction.get(background, background_direction['clean'])}；"
         f"渠道审美：{platform}。"
+        + hero_constraints
         + apricot_detail
         + "产品必须是画面唯一主角，形状、大小、颜色、成熟度和表面纹理要自然可信。"
         "使用商业摄影级三点布光：左前方大面积柔光箱作为主光，极弱的正面补光保留暗部层次，右后方细腻轮廓光勾勒商品边缘；"
