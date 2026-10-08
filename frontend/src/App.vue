@@ -34,6 +34,7 @@ const activeComposition = ref('center')
 const activeBackground = ref('clean')
 const activePlatform = ref('taobao')
 const activePosterTheme = ref('fresh')
+const posterCopy = ref({ kicker: '', title: '', subtitle: '', tags: '' })
 const isGenerating = ref(false)
 const isRecognizing = ref(false)
 const notice = ref('')
@@ -433,14 +434,16 @@ function downloadAll() {
 }
 
 function assetOverlay(asset: Result) {
-  const name = asset.product_name || product.value.name || asset.title
-  const meta = [asset.product_origin || product.value.origin, asset.product_spec || product.value.spec].filter(Boolean).join(' · ')
-  const tags = (asset.product_tags?.length ? asset.product_tags : product.value.tags).filter(Boolean).slice(0, 4)
+  const name = posterCopy.value.title.trim() || asset.product_name || product.value.name || asset.title
+  const defaultMeta = [asset.product_origin || product.value.origin, asset.product_spec || product.value.spec].filter(Boolean).join(' · ')
+  const meta = posterCopy.value.subtitle.trim() || defaultMeta
+  const customTags = posterCopy.value.tags.split(/[、,，|｜]/).map((tag) => tag.trim()).filter(Boolean)
+  const tags = (customTags.length ? customTags : (asset.product_tags?.length ? asset.product_tags : product.value.tags)).slice(0, 4)
   return { name, meta, tags, badge: asset.badge || '商品主图' }
 }
 
 function posterKicker(asset: Result) {
-  return `${currentPosterTheme.value.kicker}  ·  ${asset.badge || '商品主图'}`
+  return `${posterCopy.value.kicker.trim() || currentPosterTheme.value.kicker}  ·  ${asset.badge || '商品主图'}`
 }
 
 function loadImage(url: string): Promise<HTMLImageElement> {
@@ -482,7 +485,7 @@ async function downloadComposedAsset(asset: Result) {
     context.fillStyle = theme.meta
     context.textBaseline = 'alphabetic'
     context.font = `600 ${kickerSize}px "Noto Sans SC", "Microsoft YaHei", sans-serif`
-    context.fillText(`${theme.kicker}  ·  ${copy.badge}  ·  鲜图 AI`, padding + 18, panelTop + 33)
+    context.fillText(`${posterCopy.value.kicker.trim() || theme.kicker}  ·  ${copy.badge}  ·  鲜图 AI`, padding + 18, panelTop + 33)
     context.fillStyle = '#ffffff'
     context.font = `700 ${titleSize}px "Noto Sans SC", "Microsoft YaHei", sans-serif`
     context.fillText(copy.name, padding + 18, panelTop + 78)
@@ -647,7 +650,7 @@ async function downloadComposedAsset(asset: Result) {
 
           <section class="panel result-panel">
             <div class="result-header"><div class="step-title compact"><span class="sparkle">✦</span><div><b>生成结果</b><small>{{ generatedCopy }}</small></div></div><button class="refresh" @click="generate">⟳　重新生成</button></div>
-            <div class="poster-theme-picker"><div class="poster-theme-heading"><b>海报模板</b><small>预览与下载会同步使用</small></div><div class="poster-theme-options"><button v-for="theme in posterThemes" :key="theme.id" class="poster-theme-option" :class="[{ chosen: activePosterTheme === theme.id }, `theme-${theme.id}`]" @click="activePosterTheme = theme.id"><i></i><span>{{ theme.title }}</span><small>{{ theme.desc }}</small></button></div></div>
+            <div class="poster-theme-picker"><div class="poster-theme-heading"><b>海报模板</b><small>预览与下载会同步使用</small></div><div class="poster-theme-options"><button v-for="theme in posterThemes" :key="theme.id" class="poster-theme-option" :class="[{ chosen: activePosterTheme === theme.id }, `theme-${theme.id}`]" @click="activePosterTheme = theme.id"><i></i><span>{{ theme.title }}</span><small>{{ theme.desc }}</small></button></div><div class="poster-copy-editor"><label><span>眉标</span><input v-model="posterCopy.kicker" maxlength="20" placeholder="跟随模板文案" /></label><label><span>主标题</span><input v-model="posterCopy.title" maxlength="30" :placeholder="product.name || '商品名称'" /></label><label><span>副文案</span><input v-model="posterCopy.subtitle" maxlength="50" placeholder="产地 · 规格" /></label><label><span>标签</span><input v-model="posterCopy.tags" maxlength="60" placeholder="用、分隔，例如：鲜甜、当季" /></label><button class="copy-reset" @click="posterCopy = { kicker: '', title: '', subtitle: '', tags: '' }">恢复默认</button></div></div>
             <div v-if="results.length" class="result-grid"><article v-for="asset in results" :key="asset.id || asset.title" class="result-card" :class="[asset.kind, `poster-${activePosterTheme}`]"><img :src="asset.image" alt="生成结果" /><div class="result-overlay"><span>{{ asset.badge }}</span><button :aria-label="`下载${asset.badge}`" @click="downloadAsset(asset)">↓</button></div><div class="asset-text-layer"><span class="poster-kicker">{{ posterKicker(asset) }}　·　鲜图 AI</span><strong>{{ assetOverlay(asset).name }}</strong><small v-if="assetOverlay(asset).meta">{{ assetOverlay(asset).meta }}</small><div v-if="assetOverlay(asset).tags.length" class="asset-tags"><span v-for="tag in assetOverlay(asset).tags" :key="tag">{{ tag }}</span></div></div></article></div>
             <div v-else class="result-empty"><span>✦</span><b>还没有生成结果</b><small>选择用途和风格后，点击一键生成整套图片</small></div>
             <div class="result-footer"><span>●　已为你生成 {{ results.length }} 张高质量图片，包含多种使用场景</span><button @click="downloadAll">⇩　下载整套素材</button></div>

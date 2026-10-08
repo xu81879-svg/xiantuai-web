@@ -53,6 +53,9 @@ def test_generate_image_uses_controlled_commercial_prompt(monkeypatch):
     assert "negative_prompt" in parameters
     assert "绝对不要生成任何文字" in prompt
     assert "产品必须是画面唯一主角" in prompt
+    assert "商业摄影级三点布光" in prompt
+    assert "接触阴影" in prompt
+    assert "圆润体积与立体感" in prompt
 
 
 def test_generate_image_uses_uploaded_reference_for_product_fidelity(monkeypatch, tmp_path: Path):
