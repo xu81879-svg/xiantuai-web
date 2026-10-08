@@ -32,3 +32,24 @@ def test_recognize_product_uses_multimodal_model_and_normalizes_result(monkeypat
     result = qwen.recognize_product(source, ".jpg")
     assert captured["payload"]["model"] == "qwen3.8-flash"
     assert result == {"name": "樱桃", "origin": "", "spec": "", "tags": ["新鲜", "脆甜", "当季", "果大"]}
+
+
+def test_generate_image_uses_controlled_commercial_prompt(monkeypatch):
+    captured = {}
+
+    def fake_request(method, url, payload):
+        captured.update({"method": method, "url": url, "payload": payload})
+        return {"output": {"choices": [{"message": {"content": [{"image": "https://example.com/generated.png"}]}}]}}
+
+    monkeypatch.setenv("QWEN_IMAGE_MODEL", "qwen-image-2.0-pro")
+    monkeypatch.setattr(qwen, "_request_json", fake_request)
+
+    image_url = qwen.generate_image("崂山大樱桃", "山东·青岛崂山", "500g", "hero", "natural")
+
+    parameters = captured["payload"]["parameters"]
+    prompt = captured["payload"]["input"]["messages"][0]["content"][0]["text"]
+    assert image_url == "https://example.com/generated.png"
+    assert parameters["prompt_extend"] is False
+    assert "negative_prompt" in parameters
+    assert "绝对不要生成任何文字" in prompt
+    assert "产品必须是画面唯一主角" in prompt

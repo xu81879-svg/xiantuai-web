@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import os
 import shutil
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 from uuid import uuid4
 
 import jwt
@@ -30,7 +31,28 @@ STORAGE_DIR = Path(os.getenv("LOCAL_STORAGE_DIR", str(PROJECT_DIR / "data")))
 UPLOAD_DIR = STORAGE_DIR / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="鲜图 AI API", version="1.0.0", docs_url="/docs", redoc_url="/redoc")
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    ensure_local_storage()
+    secret_key()
+    if os.getenv("AUTO_CREATE_SCHEMA", "true").lower() == "true":
+        Base.metadata.create_all(bind=engine)
+    with SessionLocal() as db:
+        seed_catalog(db)
+        seed_credit_plans(db)
+        if os.getenv("SEED_DEMO_USER", "true").lower() == "true":
+            demo_email = os.getenv("DEMO_USER_EMAIL", "demo@xiantu.ai")
+            demo_password = os.getenv("DEMO_USER_PASSWORD", "")
+            demo_name = os.getenv("DEMO_USER_NAME", "演示商家")
+            if not demo_password:
+                raise RuntimeError("DEMO_USER_PASSWORD must be configured when SEED_DEMO_USER=true")
+            if not db.scalar(select(User).where(User.email == demo_email)):
+                db.add(User(email=demo_email, password_hash=hash_password(demo_password), display_name=demo_name))
+                db.commit()
+    yield
+
+
+app = FastAPI(title="鲜图 AI API", version="1.0.0", docs_url="/docs", redoc_url="/redoc", lifespan=lifespan)
 origins = [item.strip() for item in os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if item.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
@@ -156,25 +178,6 @@ def seed_credit_plans(db: Session) -> None:
     ])
     db.commit()
 
-
-@app.on_event("startup")
-def startup() -> None:
-    ensure_local_storage()
-    secret_key()
-    if os.getenv("AUTO_CREATE_SCHEMA", "true").lower() == "true":
-        Base.metadata.create_all(bind=engine)
-    with SessionLocal() as db:
-        seed_catalog(db)
-        seed_credit_plans(db)
-        if os.getenv("SEED_DEMO_USER", "true").lower() == "true":
-            demo_email = os.getenv("DEMO_USER_EMAIL", "demo@xiantu.ai")
-            demo_password = os.getenv("DEMO_USER_PASSWORD", "")
-            demo_name = os.getenv("DEMO_USER_NAME", "演示商家")
-            if not demo_password:
-                raise RuntimeError("DEMO_USER_PASSWORD must be configured when SEED_DEMO_USER=true")
-            if not db.scalar(select(User).where(User.email == demo_email)):
-                db.add(User(email=demo_email, password_hash=hash_password(demo_password), display_name=demo_name))
-                db.commit()
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
