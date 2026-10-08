@@ -205,8 +205,11 @@ def recognize_product(image_path: Path, suffix: str) -> dict[str, Any]:
                             "name（最具体的商品名称）、origin（产地）、spec（规格）、tags（4个以内视觉可支持的卖点标签数组）、"
                             "confidence（0到1的识别置信度数字）、evidence（不超过30字的视觉判断依据）。"
                             "必须以图片中的视觉证据为准，不要仅凭颜色、圆形轮廓或常见程度猜测，不要把不确定的品类说得肯定。"
-                            "特别注意区分杏和桃：杏通常体型较小、橙黄至橙红、果皮相对细腻、果顶和果缝形态更紧凑；"
-                            "桃通常体型更大、绒毛更明显、果缝和两半结构更突出。仅在看到足够证据时选择其中一个；"
+                            "【杏桃专属鉴别，高权重规则】先并列比较杏、桃两个候选，不得只凭橙黄色、圆形或‘水果常见度’猜测。"
+                            "杏的正向证据：通常个头较小、近圆或短椭圆、橙黄至橙红、果皮细腻而绒毛不显著、果顶较紧凑、果缝较浅窄、果肉与果核比例紧实；"
+                            "桃的正向证据：通常个头更大或扁圆、两半肩部明显、深而长的果缝、密集可见绒毛、果顶凹陷更深。"
+                            "【负向权重】仅有橙黄色、圆形、红晕、单个果缝或‘看起来像桃’不能支持桃子；如果没有清晰密集绒毛、明显扁圆肩部或深长果缝，桃子置信度必须大幅下调。"
+                            "必须在 evidence 中逐项写出支持杏或桃的可见证据，并说明最容易混淆的特征；证据不足时优先输出‘杏/桃待确认’，不要强行给高置信度。"
                             "如果无法可靠区分，name 使用‘杏/桃待确认’，confidence 不得高于0.55，并在 evidence 说明原因。"
                             "产地和规格无法从图片确认时使用空字符串，tags 只能描述看得见的外观，不能臆造甜度、产地或包装承诺。"
                         ),
@@ -234,13 +237,21 @@ def recognize_product(image_path: Path, suffix: str) -> dict[str, Any]:
         confidence = max(0.0, min(1.0, float(result.get("confidence", 0))))
     except (TypeError, ValueError):
         confidence = 0.0
+    name = str(result.get("name") or "生鲜商品")
+    evidence = str(result.get("evidence") or "")[:60]
+    # A high-confidence peach verdict without peach-specific evidence is a
+    # known failure mode for Laoshan apricots; cap it for human review.
+    peach_markers = ("绒毛", "深果缝", "深长果缝", "扁圆", "肩部", "两半")
+    if name in {"桃", "桃子"} and confidence > 0.75 and not any(marker in evidence for marker in peach_markers):
+        confidence = 0.55
+        evidence = f"桃子证据不足，需复核；原判断：{evidence}"[:60]
     return {
-        "name": str(result.get("name") or "生鲜商品"),
+        "name": name,
         "origin": str(result.get("origin") or ""),
         "spec": str(result.get("spec") or ""),
         "tags": [str(tag) for tag in tags[:4]],
         "recognition_confidence": confidence,
-        "recognition_evidence": str(result.get("evidence") or "")[:60],
+        "recognition_evidence": evidence,
     }
 
 

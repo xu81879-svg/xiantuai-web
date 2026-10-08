@@ -51,8 +51,28 @@ def test_recognize_product_uses_multimodal_model_and_normalizes_result(monkeypat
     assert captured["payload"]["model"] == "qwen3.8-flash"
     assert result == {"name": "樱桃", "origin": "", "spec": "", "tags": ["新鲜", "脆甜", "当季", "果大"], "recognition_confidence": 0.94, "recognition_evidence": "果实颜色和形态清晰"}
     prompt = captured["payload"]["messages"][0]["content"][0]["text"]
-    assert "特别注意区分杏和桃" in prompt
+    assert "杏桃专属鉴别" in prompt
+    assert "负向权重" in prompt
     assert "杏/桃待确认" in prompt
+
+
+def test_recognize_product_caps_unsupported_peach_confidence(monkeypatch, tmp_path: Path):
+    source = tmp_path / "apricot.jpg"
+    Image.new("RGB", (320, 240), (220, 120, 40)).save(source)
+
+    monkeypatch.setattr(qwen, "_request_json", lambda *args: {"choices": [{"message": {"content": '{"name":"桃子","confidence":0.92,"evidence":"橙黄色圆形果实"}'}}]})
+    result = qwen.recognize_product(source, ".jpg")
+    assert result["recognition_confidence"] == 0.55
+    assert "证据不足" in result["recognition_evidence"]
+
+
+def test_recognize_product_keeps_peach_confidence_with_specific_evidence(monkeypatch, tmp_path: Path):
+    source = tmp_path / "peach.jpg"
+    Image.new("RGB", (320, 240), (220, 120, 40)).save(source)
+
+    monkeypatch.setattr(qwen, "_request_json", lambda *args: {"choices": [{"message": {"content": '{"name":"桃子","confidence":0.92,"evidence":"密集绒毛、深长果缝和扁圆肩部"}'}}]})
+    result = qwen.recognize_product(source, ".jpg")
+    assert result["recognition_confidence"] == 0.92
 
 
 def test_generate_apricot_prompt_emphasizes_fresh_gloss(monkeypatch):
