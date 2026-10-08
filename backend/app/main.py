@@ -22,7 +22,7 @@ from fastapi import FastAPI
 from .database import Base, SessionLocal, engine, ensure_local_storage, get_db
 from .models import CreditOrder, CreditPlan, CreditTransaction, Generation, HelpArticle, PayPalWebhookEvent, Product, Template, User
 from .paypal import PayPalError, approval_url, capture_order, client_id as paypal_client_id, configured as paypal_configured, create_order as paypal_create_order, mock_mode as paypal_mock_mode, show_order, verify_webhook_signature
-from .qwen import QwenError, allow_mock_fallback, generate_image, is_qwen_configured, persist_remote_image, recognize_product as qwen_recognize_product
+from .qwen import QwenError, allow_mock_fallback, compile_generation_plan, generate_image, is_qwen_configured, persist_remote_image, quality_check_image, recognize_product as qwen_recognize_product
 from .security import create_access_token, hash_password, read_user_id, secret_key, verify_password
 
 APP_DIR = Path(__file__).resolve().parent.parent
@@ -440,10 +440,18 @@ def create_generation(payload: GenerationPayload, user: User = Depends(current_u
     if not product:
         raise HTTPException(status_code=422, detail="请提供商品信息")
     primary_image = None
+    quality_report: dict[str, Any] = {"passed": True, "retries": 0, "reasons": [], "source": "not_run"}
+    pipeline_plan = compile_generation_plan(product.name, product.origin, product.spec, product.tags, payload.usage)
     if is_qwen_configured():
         try:
-            remote_image = generate_image(product.name, product.origin, product.spec, payload.usage, payload.style, payload.tone, payload.composition, payload.background, payload.platform, reference_image=product_reference_path(product))
-            primary_image = persist_remote_image(remote_image, UPLOAD_DIR)
+            reference_image = product_reference_path(product)
+            for attempt in range(2):
+                remote_image = generate_image(product.name, product.origin, product.spec, payload.usage, payload.style, payload.tone, payload.composition, payload.background, payload.platform, reference_image=reference_image, tags=product.tags)
+                primary_image = persist_remote_image(remote_image, UPLOAD_DIR)
+                quality_report = quality_check_image(UPLOAD_DIR / Path(primary_image).name, product.name, payload.usage)
+                quality_report["retries"] = attempt
+                if quality_report.get("passed") or attempt == 1:
+                    break
         except QwenError as exc:
             if not allow_mock_fallback():
                 raise HTTPException(status_code=502, detail=f"千问生图失败：{exc}") from exc
@@ -454,7 +462,7 @@ def create_generation(payload: GenerationPayload, user: User = Depends(current_u
     db.add(CreditTransaction(user_id=user.id, amount=-1, balance_after=user.credit_balance, reason="generation"))
     db.commit()
     db.refresh(generation)
-    return {"id": generation.id, "status": generation.status, "usage": generation.usage, "style": generation.style, "product": serialize_product(product), "assets": assets}
+    return {"id": generation.id, "status": generation.status, "usage": generation.usage, "style": generation.style, "product": serialize_product(product), "assets": assets, "pipeline": {"product_understanding": {"category": pipeline_plan.category, "selling_points": pipeline_plan.selling_points, "structure": pipeline_plan.structure}, "usage_identification": pipeline_plan.image_usage, "engine": pipeline_plan.engine, "prompt_compiler": "compiled", "quality_check": quality_report}}
 
 @app.get("/api/generations")
 def list_generations(user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, Any]:

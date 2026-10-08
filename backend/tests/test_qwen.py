@@ -18,6 +18,24 @@ def test_data_url_is_jpeg_and_downscaled(tmp_path: Path):
     assert data_url.startswith("data:image/jpeg;base64,")
 
 
+def test_generation_plan_selects_engine_by_usage():
+    hero = qwen.compile_generation_plan("崂山杏", "山东·青岛崂山", "500g", ["果面光泽"], "hero")
+    detail = qwen.compile_generation_plan("崂山杏", "山东·青岛崂山", "500g", ["果肉细腻"], "detail")
+    promo = qwen.compile_generation_plan("崂山杏", "山东·青岛崂山", "500g", [], "promo")
+    assert (hero.image_usage, hero.engine) == ("主图", "版式引擎")
+    assert (detail.image_usage, detail.engine) == ("详情图", "场景引擎")
+    assert (promo.image_usage, promo.engine) == ("营销图", "创意引擎")
+    assert "单一 SKU" in hero.constraints
+
+
+def test_quality_check_has_file_level_gate(tmp_path: Path):
+    source = tmp_path / "tiny.png"
+    Image.new("RGB", (128, 128), (255, 255, 255)).save(source)
+    result = qwen.quality_check_image(source, "崂山杏", "hero")
+    assert result["passed"] is False
+    assert "512" in result["reasons"][0]
+
+
 def test_recognize_product_uses_multimodal_model_and_normalizes_result(monkeypatch, tmp_path: Path):
     source = tmp_path / "product.jpg"
     Image.new("RGB", (320, 240), (220, 40, 40)).save(source)

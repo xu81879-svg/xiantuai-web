@@ -6,6 +6,7 @@ import json
 import os
 import re
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -16,6 +17,44 @@ from PIL import Image, ImageOps
 
 class QwenError(RuntimeError):
     """A safe, user-facing error raised when a Qwen request fails."""
+
+
+@dataclass
+class GenerationPlan:
+    """商品理解到 Prompt Compiler 的中间计划。"""
+
+    category: str
+    selling_points: list[str]
+    structure: list[str]
+    image_usage: str
+    engine: str
+    constraints: list[str] = field(default_factory=list)
+
+
+def understand_product(product_name: str, origin: str = "", spec: str = "", tags: list[str] | None = None) -> dict[str, Any]:
+    """商品理解阶段：视觉识别提供事实，这里整理成可编译结构。"""
+    name = product_name.strip() or "生鲜商品"
+    category = "水果" if any(word in name for word in ("杏", "桃", "柿", "樱桃", "苹果", "梨", "葡萄", "橙", "柑")) else "生鲜商品"
+    selling_points = [str(tag).strip() for tag in (tags or []) if str(tag).strip()][:4]
+    structure = ["主体轮廓", "表皮纹理", "色泽成熟度"]
+    if "杏" in name:
+        structure += ["果缝", "天然细绒毛", "果肉与果核关系"]
+    return {"category": category, "selling_points": selling_points, "structure": structure, "origin": origin.strip(), "spec": spec.strip()}
+
+
+def identify_image_usage(usage: str) -> str:
+    return {"hero": "主图", "detail": "详情图", "promo": "营销图", "social": "营销图", "share": "营销图", "all": "营销图"}.get(usage, "主图")
+
+
+def compile_generation_plan(product_name: str, origin: str, spec: str, tags: list[str] | None, usage: str) -> GenerationPlan:
+    """用途识别、引擎选择和约束编译阶段。"""
+    understanding = understand_product(product_name, origin, spec, tags)
+    image_usage = identify_image_usage(usage)
+    engine = {"主图": "版式引擎", "详情图": "场景引擎", "营销图": "创意引擎"}[image_usage]
+    constraints = ["商品身份不可改变", "不生成文字、Logo、水印", "保持真实材质与自然比例"]
+    if image_usage == "主图":
+        constraints += ["单一 SKU", "白底目录摄影", "不切开、不堆叠、不使用生活方式道具"]
+    return GenerationPlan(understanding["category"], understanding["selling_points"], understanding["structure"], image_usage, engine, constraints)
 
 
 def _env(name: str, default: str) -> str:
@@ -205,7 +244,7 @@ def recognize_product(image_path: Path, suffix: str) -> dict[str, Any]:
     }
 
 
-def generate_image(product_name: str, origin: str, spec: str, usage: str, style: str, tone: str = "fresh", composition: str = "center", background: str = "clean", platform: str = "taobao", reference_image: Path | None = None) -> str:
+def generate_image(product_name: str, origin: str, spec: str, usage: str, style: str, tone: str = "fresh", composition: str = "center", background: str = "clean", platform: str = "taobao", reference_image: Path | None = None, tags: list[str] | None = None) -> str:
     """Generate from text, or edit a supplied product image while preserving its identity."""
     usage_direction = {
         "hero": "正方形电商目录主图，单一 SKU 商品完整可见，主体居中，占画面约 65%，四周保留均衡留白",
@@ -242,6 +281,7 @@ def generate_image(product_name: str, origin: str, spec: str, usage: str, style:
     }
     product_facts = [fact.strip() for fact in (product_name, origin, spec) if fact and fact.strip()]
     fact_text = "、".join(product_facts) if product_facts else "优质生鲜商品"
+    plan = compile_generation_plan(product_name, origin, spec, tags, usage)
     hero_constraints = ""
     if usage == "hero":
         hero_constraints = (
@@ -270,6 +310,8 @@ def generate_image(product_name: str, origin: str, spec: str, usage: str, style:
         f"构图：{composition_direction.get(composition, composition_direction['center'])}；"
         f"背景：{background_direction.get(background, background_direction['clean'])}；"
         f"渠道审美：{platform}。"
+        f"管线阶段：商品理解={plan.category}；用途识别={plan.image_usage}；执行引擎={plan.engine}；"
+        f"商品结构关注={ '、'.join(plan.structure) }。"
         + hero_constraints
         + apricot_detail
         + "产品必须是画面唯一主角，形状、大小、颜色、成熟度和表面纹理要自然可信。"
@@ -330,3 +372,37 @@ def persist_remote_image(image_url: str, upload_dir: Path) -> str:
     target = upload_dir / filename
     target.write_bytes(response.content)
     return f"/uploads/{filename}"
+
+
+def quality_check_image(image_path: Path, product_name: str, usage: str) -> dict[str, Any]:
+    """质量检查 Agent：先做文件级检查，再让视觉模型检查构图与商品身份。"""
+    try:
+        with Image.open(image_path) as image:
+            width, height = image.size
+            image.verify()
+    except (OSError, ValueError) as exc:
+        return {"passed": False, "reasons": [f"图片文件不可用：{exc}"], "source": "heuristic"}
+    if width < 512 or height < 512:
+        return {"passed": False, "reasons": ["输出分辨率低于 512×512"], "source": "heuristic"}
+    if not is_qwen_configured():
+        return {"passed": True, "reasons": [], "source": "heuristic", "width": width, "height": height}
+    usage_name = identify_image_usage(usage)
+    check_prompt = (
+        f"你是电商图片质量检查 Agent。检查这张{usage_name}是否适合商品‘{product_name}’。"
+        "只返回 JSON：{\"passed\":true或false,\"reasons\":[不超过3条中文原因]}。"
+        "检查商品身份是否正确、主体是否完整清晰、是否出现变形重复、文字水印或明显伪影。"
+        + ("主图额外要求：单一 SKU、白底目录构图、无道具、无切面、无多商品。" if usage == "hero" else "")
+    )
+    payload = {"model": qwen_vision_model(), "messages": [{"role": "user", "content": [{"type": "text", "text": check_prompt}, {"type": "image_url", "image_url": {"url": _data_url(image_path, image_path.suffix.lower())}}]}], "temperature": 0.0}
+    try:
+        body = _request_json("POST", f"{qwen_base_url()}/chat/completions", payload)
+        content = body["choices"][0]["message"]["content"]
+        if isinstance(content, list):
+            content = "".join(str(item.get("text", "")) for item in content if isinstance(item, dict))
+        result = _json_from_text(str(content))
+        reasons = result.get("reasons", [])
+        if not isinstance(reasons, list): reasons = [str(reasons)]
+        return {"passed": bool(result.get("passed")), "reasons": [str(reason) for reason in reasons[:3]], "source": "vision", "width": width, "height": height}
+    except (QwenError, KeyError, IndexError, TypeError, ValueError) as exc:
+        # Quality inspection must never make a healthy generation unavailable.
+        return {"passed": True, "reasons": [f"质量检查降级：{exc}"], "source": "fallback", "width": width, "height": height}
