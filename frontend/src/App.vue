@@ -7,7 +7,7 @@ declare global {
 
 type Usage = { id: string; icon: string; title: string; desc: string }
 type StyleItem = { id: string; title: string; image: string; tag?: string }
-type Result = { id?: string; title: string; badge: string; image: string; kind: string; product_name?: string; created_at?: string }
+type Result = { id?: string; title: string; badge: string; image: string; kind: string; product_name?: string; product_origin?: string; product_spec?: string; product_tags?: string[]; created_at?: string }
 type Product = { id?: string; name: string; origin: string; spec: string; tags: string[]; image_url?: string | null; created_at?: string; updated_at?: string }
 type Generation = { id: string; status: string; usage: string; style: string; count: number; assets: Result[]; product_id?: string | null; product_name?: string | null; created_at?: string }
 type TemplateItem = { id: string; title: string; category: string; description: string; preview_url: string; usage: string; style: string }
@@ -413,17 +413,74 @@ async function generate() {
 }
 
 function downloadAsset(asset: Result) {
-  const link = document.createElement('a')
-  link.href = asset.image
-  link.download = `${asset.title}.jpg`
-  link.target = '_blank'
-  link.click()
-  notice.value = `正在下载「${asset.title}」`
+  void downloadComposedAsset(asset)
 }
 
 function downloadAll() {
-  results.value.forEach((asset, index) => window.setTimeout(() => downloadAsset(asset), index * 180))
+  results.value.forEach((asset, index) => window.setTimeout(() => downloadAsset(asset), index * 350))
   notice.value = '正在下载全部素材'
+}
+
+function assetOverlay(asset: Result) {
+  const name = asset.product_name || product.value.name || asset.title
+  const meta = [asset.product_origin || product.value.origin, asset.product_spec || product.value.spec].filter(Boolean).join(' · ')
+  const tags = (asset.product_tags?.length ? asset.product_tags : product.value.tags).filter(Boolean).slice(0, 4)
+  return { name, meta, tags }
+}
+
+function loadImage(url: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image()
+    image.crossOrigin = 'anonymous'
+    image.onload = () => resolve(image)
+    image.onerror = () => reject(new Error('图片加载失败'))
+    image.src = url
+  })
+}
+
+async function downloadComposedAsset(asset: Result) {
+  try {
+    const image = await loadImage(asset.image)
+    const canvas = document.createElement('canvas')
+    canvas.width = image.naturalWidth || image.width
+    canvas.height = image.naturalHeight || image.height
+    const context = canvas.getContext('2d')
+    if (!context || !canvas.width || !canvas.height) throw new Error('无法创建合成画布')
+    context.drawImage(image, 0, 0, canvas.width, canvas.height)
+
+    const copy = assetOverlay(asset)
+    const padding = Math.max(28, Math.round(canvas.width * 0.055))
+    const titleSize = Math.max(28, Math.round(canvas.width * 0.038))
+    const metaSize = Math.max(16, Math.round(canvas.width * 0.019))
+    const gradient = context.createLinearGradient(0, canvas.height * 0.62, 0, canvas.height)
+    gradient.addColorStop(0, 'rgba(5, 25, 11, 0)')
+    gradient.addColorStop(1, 'rgba(5, 25, 11, 0.78)')
+    context.fillStyle = gradient
+    context.fillRect(0, canvas.height * 0.55, canvas.width, canvas.height * 0.45)
+    context.fillStyle = '#ffffff'
+    context.textBaseline = 'alphabetic'
+    context.font = `600 ${titleSize}px "Noto Sans SC", "Microsoft YaHei", sans-serif`
+    context.fillText(copy.name, padding, canvas.height - padding - metaSize - 14)
+    context.font = `400 ${metaSize}px "Noto Sans SC", "Microsoft YaHei", sans-serif`
+    const detail = [copy.meta, copy.tags.join(' · ')].filter(Boolean).join('  |  ')
+    if (detail) context.fillText(detail, padding, canvas.height - padding)
+
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92))
+    if (!blob) throw new Error('图片合成失败')
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(blob)
+    link.download = `${copy.name || asset.title}.jpg`
+    link.click()
+    window.setTimeout(() => URL.revokeObjectURL(link.href), 1000)
+    notice.value = `已下载带文字信息的「${copy.name || asset.title}」`
+  } catch {
+    const link = document.createElement('a')
+    link.href = asset.image
+    link.download = `${asset.title}.jpg`
+    link.target = '_blank'
+    link.click()
+    notice.value = `已下载原图「${asset.title}」，跨域图片无法合成文字`
+  }
 }
 </script>
 
@@ -553,7 +610,7 @@ function downloadAll() {
 
           <section class="panel result-panel">
             <div class="result-header"><div class="step-title compact"><span class="sparkle">✦</span><div><b>生成结果</b><small>{{ generatedCopy }}</small></div></div><button class="refresh" @click="generate">⟳　重新生成</button></div>
-            <div v-if="results.length" class="result-grid"><article v-for="asset in results" :key="asset.id || asset.title" class="result-card" :class="asset.kind"><img :src="asset.image" alt="生成结果" /><div class="result-overlay"><span>{{ asset.badge }}</span><button @click="downloadAsset(asset)">↓</button></div><strong v-if="asset.kind === 'main'">{{ product.name }}</strong><small v-if="asset.kind === 'main'">{{ product.tags.join(' · ') }}</small></article></div>
+            <div v-if="results.length" class="result-grid"><article v-for="asset in results" :key="asset.id || asset.title" class="result-card" :class="asset.kind"><img :src="asset.image" alt="生成结果" /><div class="result-overlay"><span>{{ asset.badge }}</span><button :aria-label="`下载${asset.badge}`" @click="downloadAsset(asset)">↓</button></div><div class="asset-text-layer"><strong>{{ assetOverlay(asset).name }}</strong><small v-if="assetOverlay(asset).meta">{{ assetOverlay(asset).meta }}</small><div v-if="assetOverlay(asset).tags.length" class="asset-tags"><span v-for="tag in assetOverlay(asset).tags" :key="tag">{{ tag }}</span></div></div></article></div>
             <div v-else class="result-empty"><span>✦</span><b>还没有生成结果</b><small>选择用途和风格后，点击一键生成整套图片</small></div>
             <div class="result-footer"><span>●　已为你生成 {{ results.length }} 张高质量图片，包含多种使用场景</span><button @click="downloadAll">⇩　下载整套素材</button></div>
           </section>

@@ -141,12 +141,24 @@ def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(secu
     return user
 
 
-def make_assets(product_name: str, primary_image: str | None = None) -> list[dict[str, Any]]:
+def make_assets(product_name: str, primary_image: str | None = None, origin: str = "", spec: str = "", tags: list[str] | None = None) -> list[dict[str, Any]]:
     titles = [product_name, "甜蜜多汁 · 一口爆甜", "源自产地 · 自然成熟", "新鲜好物 · 限时特惠", "把新鲜带回家"]
     badges = ["电商主图", "详情页卖点", "场景图", "促销活动", "朋友圈分享"]
     kinds = ["main", "detail", "scene", "sale", "share"]
     images = [primary_image or ASSET_IMAGES[0], *ASSET_IMAGES[1:]]
-    return [{"title": title, "badge": badge, "kind": kind, "image": image} for title, badge, kind, image in zip(titles, badges, kinds, images)]
+    return [
+        {
+            "title": title,
+            "badge": badge,
+            "kind": kind,
+            "image": image,
+            "product_name": product_name,
+            "product_origin": origin,
+            "product_spec": spec,
+            "product_tags": (tags or [])[:4],
+        }
+        for title, badge, kind, image in zip(titles, badges, kinds, images)
+    ]
 
 
 def seed_catalog(db: Session) -> None:
@@ -426,7 +438,7 @@ def create_generation(payload: GenerationPayload, user: User = Depends(current_u
         except QwenError as exc:
             if not allow_mock_fallback():
                 raise HTTPException(status_code=502, detail=f"千问生图失败：{exc}") from exc
-    assets = make_assets(product.name, primary_image)
+    assets = make_assets(product.name, primary_image, product.origin, product.spec, product.tags)
     user.credit_balance -= 1
     generation = Generation(owner_id=user.id, product_id=product.id, usage=payload.usage, style=payload.style, status="completed", assets=assets)
     db.add(generation)
