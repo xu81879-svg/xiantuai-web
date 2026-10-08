@@ -26,12 +26,15 @@ def test_recognize_product_uses_multimodal_model_and_normalizes_result(monkeypat
 
     def fake_request(method, url, payload):
         captured.update({"method": method, "url": url, "payload": payload})
-        return {"choices": [{"message": {"content": '{"name":"樱桃","tags":["新鲜","脆甜","当季","果大","多余"]}'}}]}
+        return {"choices": [{"message": {"content": '{"name":"樱桃","tags":["新鲜","脆甜","当季","果大","多余"],"confidence":0.94,"evidence":"果实颜色和形态清晰"}'}}]}
 
     monkeypatch.setattr(qwen, "_request_json", fake_request)
     result = qwen.recognize_product(source, ".jpg")
     assert captured["payload"]["model"] == "qwen3.8-flash"
-    assert result == {"name": "樱桃", "origin": "", "spec": "", "tags": ["新鲜", "脆甜", "当季", "果大"]}
+    assert result == {"name": "樱桃", "origin": "", "spec": "", "tags": ["新鲜", "脆甜", "当季", "果大"], "recognition_confidence": 0.94, "recognition_evidence": "果实颜色和形态清晰"}
+    prompt = captured["payload"]["messages"][0]["content"][0]["text"]
+    assert "特别注意区分杏和桃" in prompt
+    assert "杏/桃待确认" in prompt
 
 
 def test_generate_image_uses_controlled_commercial_prompt(monkeypatch):

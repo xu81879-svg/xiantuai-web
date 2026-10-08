@@ -8,7 +8,7 @@ declare global {
 type Usage = { id: string; icon: string; title: string; desc: string }
 type StyleItem = { id: string; title: string; image: string; tag?: string }
 type Result = { id?: string; title: string; badge: string; image: string; kind: string; product_name?: string; product_origin?: string; product_spec?: string; product_tags?: string[]; created_at?: string }
-type Product = { id?: string; name: string; origin: string; spec: string; tags: string[]; image_url?: string | null; created_at?: string; updated_at?: string }
+type Product = { id?: string; name: string; origin: string; spec: string; tags: string[]; image_url?: string | null; recognition_confidence?: number; recognition_evidence?: string; created_at?: string; updated_at?: string }
 type Generation = { id: string; status: string; usage: string; style: string; count: number; assets: Result[]; product_id?: string | null; product_name?: string | null; created_at?: string }
 type TemplateItem = { id: string; title: string; category: string; description: string; preview_url: string; usage: string; style: string }
 type HelpItem = { id: string; category: string; question: string; answer: string }
@@ -380,7 +380,8 @@ async function recognize(file: File) {
     }
     const data = await response.json()
     product.value = { ...product.value, ...data, tags: data.tags ?? product.value.tags }
-    notice.value = 'AI 已识别商品信息，你可以继续编辑'
+    const confidence = typeof data.recognition_confidence === 'number' ? data.recognition_confidence : 0
+    notice.value = confidence > 0 && confidence < 0.78 ? `AI 识别为「${data.name}」，但置信度较低，请重点复核品类` : 'AI 已识别商品信息，你可以继续编辑'
   } catch (error) {
     notice.value = staticPreview ? '静态预览模式：这里会连接真实 AI 识别服务' : (error instanceof Error ? error.message : '图片识别失败，请稍后重试')
   } finally {
@@ -629,7 +630,7 @@ async function downloadComposedAsset(asset: Result) {
             <div class="field tag-field"><span>卖点标签</span><div class="tags"><button v-for="tag in ['果大','脆甜','新鲜','当季']" :key="tag" :class="{ chosen: product.tags.includes(tag) }" @click="toggleTag(tag)">{{ tag }}</button><button class="plus" @click="product.tags.push('精选')">＋</button></div></div>
             <label class="field"><span>产地</span><input v-model="product.origin" /></label>
             <label class="field"><span>规格</span><input v-model="product.spec" /></label>
-            <div class="ai-hint" :class="{ recognizing: isRecognizing }">{{ isRecognizing ? '✦　AI 正在分析图片，请稍候…' : '♧　AI 已智能识别商品信息，您也可以手动修改' }}<br /><small>{{ isRecognizing ? '通常需要 5 秒左右，完成后可继续编辑。' : '让图片更符合你的需求。' }}</small></div>
+            <div class="ai-hint" :class="{ recognizing: isRecognizing, 'needs-review': !isRecognizing && product.recognition_confidence && product.recognition_confidence < 0.78 }">{{ isRecognizing ? '✦　AI 正在分析图片，请稍候…' : (product.recognition_confidence && product.recognition_confidence < 0.78 ? '⚠　识别置信度较低，请确认商品名称' : '♧　AI 已智能识别商品信息，您也可以手动修改') }}<br /><small>{{ isRecognizing ? '通常需要 5 秒左右，完成后可继续编辑。' : (product.recognition_evidence || '让图片更符合你的需求。') }}</small></div>
             <button class="save-product-btn" @click="saveProduct">保存商品信息</button>
           </section>
 

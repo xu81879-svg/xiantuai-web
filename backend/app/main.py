@@ -377,7 +377,7 @@ async def recognize_product(file: UploadFile = File(...), user: User = Depends(c
     target = UPLOAD_DIR / stored_name
     with target.open("wb") as output:
         shutil.copyfileobj(file.file, output)
-    result = {"name": "崂山大樱桃", "origin": "山东·青岛崂山", "spec": "500g", "tags": ["果大", "脆甜", "新鲜", "当季"]}
+    result = {"name": "崂山大樱桃", "origin": "山东·青岛崂山", "spec": "500g", "tags": ["果大", "脆甜", "新鲜", "当季"], "recognition_confidence": 0.45, "recognition_evidence": "暂未完成可靠的视觉识别，请手动确认"}
     if is_qwen_configured():
         try:
             result = {**result, **qwen_recognize_product(target, suffix)}

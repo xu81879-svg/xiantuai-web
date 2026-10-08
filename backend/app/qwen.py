@@ -162,9 +162,14 @@ def recognize_product(image_path: Path, suffix: str) -> dict[str, Any]:
                     {
                         "type": "text",
                         "text": (
-                            "识别这张生鲜商品图片，只返回 JSON，不要 Markdown。字段必须包含："
-                            "name（商品名称）、origin（产地）、spec（规格）、tags（4个以内卖点标签数组）。"
-                            "无法确定的字段使用空字符串。"
+                            "你是生鲜品类质检员。识别这张生鲜商品图片，只返回 JSON，不要 Markdown。字段必须包含："
+                            "name（最具体的商品名称）、origin（产地）、spec（规格）、tags（4个以内视觉可支持的卖点标签数组）、"
+                            "confidence（0到1的识别置信度数字）、evidence（不超过30字的视觉判断依据）。"
+                            "必须以图片中的视觉证据为准，不要仅凭颜色、圆形轮廓或常见程度猜测，不要把不确定的品类说得肯定。"
+                            "特别注意区分杏和桃：杏通常体型较小、橙黄至橙红、果皮相对细腻、果顶和果缝形态更紧凑；"
+                            "桃通常体型更大、绒毛更明显、果缝和两半结构更突出。仅在看到足够证据时选择其中一个；"
+                            "如果无法可靠区分，name 使用‘杏/桃待确认’，confidence 不得高于0.55，并在 evidence 说明原因。"
+                            "产地和规格无法从图片确认时使用空字符串，tags 只能描述看得见的外观，不能臆造甜度、产地或包装承诺。"
                         ),
                     },
                     {"type": "image_url", "image_url": {"url": _data_url(image_path, suffix)}},
@@ -186,11 +191,17 @@ def recognize_product(image_path: Path, suffix: str) -> dict[str, Any]:
     tags = result.get("tags", [])
     if not isinstance(tags, list):
         tags = []
+    try:
+        confidence = max(0.0, min(1.0, float(result.get("confidence", 0))))
+    except (TypeError, ValueError):
+        confidence = 0.0
     return {
         "name": str(result.get("name") or "生鲜商品"),
         "origin": str(result.get("origin") or ""),
         "spec": str(result.get("spec") or ""),
         "tags": [str(tag) for tag in tags[:4]],
+        "recognition_confidence": confidence,
+        "recognition_evidence": str(result.get("evidence") or "")[:60],
     }
 
 

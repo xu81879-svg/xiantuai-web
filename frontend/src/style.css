@@ -30,3 +30,4 @@
 
 /* Free copy editor for campaign-ready poster variants. */
 .poster-copy-editor{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px;padding-top:8px;border-top:1px dashed #dce7df}.poster-copy-editor label{display:flex;align-items:center;gap:5px;min-width:0}.poster-copy-editor label span{flex-shrink:0;color:#738079;font-size:8px}.poster-copy-editor input{height:27px;min-width:0;width:100%;border:1px solid #e0e9e3;border-radius:5px;padding:0 7px;background:#fff;color:#314238;font-size:9px;outline:none}.poster-copy-editor input:focus{border-color:#42c985;box-shadow:0 0 0 2px #42c9851f}.poster-copy-editor input::placeholder{color:#b0bab4}.poster-copy-editor .copy-reset{grid-column:1 / -1;justify-self:end;color:#18955a;font-size:9px;padding:2px 0}.poster-copy-editor .copy-reset:hover{text-decoration:underline}
+.ai-hint.needs-review{background:#fff8e9;color:#a56b27;border:1px solid #f4dfb5}.ai-hint.needs-review small{color:#a98a5a}
