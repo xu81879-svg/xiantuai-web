@@ -29,7 +29,7 @@ from .database import Base, SessionLocal, engine, ensure_local_storage, get_db
 from .emailing import EmailDeliveryError, send_verification_email, smtp_configured
 from .models import CreditOrder, CreditPlan, CreditTransaction, EmailVerificationToken, Generation, HelpArticle, PayPalWebhookEvent, Product, Template, User
 from .paypal import PayPalError, approval_url, capture_order, checkout_enabled as paypal_checkout_enabled, client_id as paypal_client_id, configured as paypal_configured, create_order as paypal_create_order, mock_mode as paypal_mock_mode, payment_mode as paypal_payment_mode, show_order, verify_webhook_signature
-from .qwen import QwenError, allow_mock_fallback, compile_generation_plan, generate_image, is_qwen_configured, persist_remote_image, quality_check_image, recognize_product as qwen_recognize_product
+from .qwen import QwenError, VisualPlanError, allow_mock_fallback, compile_generation_plan, generate_image, is_qwen_configured, persist_remote_image, quality_check_image, recognize_product as qwen_recognize_product, select_visual_plan
 from .rate_limit import enforce_auth_rate_limit, enforce_resource_rate_limit
 from .security import PASSWORDS, create_access_token, hash_password, read_user_id, secret_key, verify_password
 
@@ -217,40 +217,71 @@ def run_generation_pipeline(generation_id: str, product_id: str, options: dict[s
             logger.error("pipeline.task_missing generation=%s product=%s", generation_id, product_id)
             return
         started_at = pipeline_now()
-        state: dict[str, Any] = {"status": "processing", "worker": "celery" if os.getenv("CELERY_BROKER_URL") or os.getenv("REDIS_URL") else "thread", "started_at": started_at, "current_stage": "model", "stages": {"model": {"status": "active", "started_at": started_at}}}
+        state: dict[str, Any] = {"status": "processing", "worker": "celery" if os.getenv("CELERY_BROKER_URL") or os.getenv("REDIS_URL") else "thread", "started_at": started_at, "current_stage": "visual_plan", "stages": {"visual_plan": {"status": "active", "started_at": started_at}}}
         generation.status = "processing"
         generation.pipeline_state = state
         db.commit()
-        quality_report: dict[str, Any] = {"passed": True, "retries": 0, "reasons": [], "source": "not_run"}
+        quality_report: dict[str, Any] = {"passed": False, "retries": 0, "reasons": [], "source": "not_run"}
+        candidate_path: Path | None = None
+        accepted_image: str | None = None
+        failure_stage = "visual_plan"
         try:
-            plan = compile_generation_plan(product.name, product.origin, product.spec, product.tags, options["usage"])
+            usage = options.get("usage", "hero")
+            style = options.get("style", "natural")
+            tone = options.get("tone", "fresh")
+            composition = options.get("composition", "center")
+            background = options.get("background", "clean")
+            platform = options.get("platform", "taobao")
+            plan = compile_generation_plan(product.name, product.origin, product.spec, product.tags, usage, style, tone, composition, background, platform)
+            visual = plan.visual
+            assert visual is not None
+            state["current_stage"] = "model"
+            state["stages"]["visual_plan"] = {"status": "completed", "started_at": started_at, "ended_at": pipeline_now(), "detail": "Python 已锁定视觉方案", "result": {"usage": visual.usage, "style": visual.style, "composition": visual.composition, "background": visual.background, "hard_constraints": list(visual.hard_constraints)}}
+            state["stages"]["model"] = {"status": "active", "started_at": pipeline_now()}
+            generation.pipeline_state = dict(state)
+            db.commit()
             if not is_qwen_configured():
                 raise QwenError("真实生图服务未配置；任务失败且额度已退回")
-            primary_image = None
             reference_image = product_reference_path(product)
             for attempt in range(2):
-                logger.info("pipeline.generate attempt=%s task=%s product=%s usage=%s engine=%s", attempt + 1, generation_id, product.name, options["usage"], plan.engine)
-                remote_image = generate_image(product.name, product.origin, product.spec, options["usage"], options["style"], options["tone"], options["composition"], options["background"], options["platform"], reference_image=reference_image, tags=product.tags)
+                failure_stage = "model"
+                state["current_stage"] = "model"
+                logger.info("pipeline.generate attempt=%s task=%s product=%s usage=%s engine=%s", attempt + 1, generation_id, product.name, usage, plan.engine)
+                remote_image = generate_image(product.name, product.origin, product.spec, usage, style, tone, composition, background, platform, reference_image=reference_image, tags=product.tags, plan=plan)
                 primary_image = persist_remote_image(remote_image, UPLOAD_DIR)
-                quality_report = quality_check_image(UPLOAD_DIR / Path(primary_image).name, product.name, options["usage"])
+                candidate_path = UPLOAD_DIR / Path(primary_image).name
+                failure_stage = "quality"
+                state["current_stage"] = "quality"
+                quality_report = quality_check_image(candidate_path, product.name, usage, reference_image, plan)
                 quality_report["retries"] = attempt
                 logger.info("pipeline.quality task=%s passed=%s source=%s retries=%s reasons=%s", generation_id, quality_report.get("passed"), quality_report.get("source"), attempt, " | ".join(quality_report.get("reasons", [])))
-                if quality_report.get("passed") or attempt == 1:
+                state["quality_check"] = quality_report
+                if quality_report.get("passed") is True:
+                    accepted_image = primary_image
+                    state["stages"]["quality"] = {"status": "completed", "ended_at": pipeline_now(), "detail": "全部硬约束通过", "result": quality_report}
                     break
-                logger.warning("pipeline.retry task=%s reason=quality_check_failed", generation_id)
-            pipeline = {"product_understanding": {"category": plan.category, "selling_points": plan.selling_points, "structure": plan.structure}, "usage_identification": plan.image_usage, "engine": plan.engine, "prompt_compiler": "compiled", "quality_check": quality_report}
+                candidate_path.unlink(missing_ok=True)
+                candidate_path = None
+                state["stages"]["quality"] = {"status": "retrying" if attempt == 0 else "failed", "ended_at": pipeline_now(), "detail": "硬约束未全部通过", "result": quality_report}
+                if attempt == 0:
+                    logger.warning("pipeline.retry task=%s reason=quality_check_failed", generation_id)
+                    continue
+                raise QwenError("图片未通过硬约束验收：" + "；".join(quality_report.get("reasons", [])[:5]))
+            if accepted_image is None or quality_report.get("passed") is not True:
+                raise QwenError("图片未通过硬约束验收，不能标记为完成")
+            pipeline = {"product_understanding": {"category": plan.category, "selling_points": plan.selling_points, "structure": plan.structure}, "visual_plan": {"usage": visual.usage, "style": visual.style, "composition": visual.composition, "background": visual.background, "hard_constraints": list(visual.hard_constraints)}, "usage_identification": plan.image_usage, "engine": plan.engine, "prompt_compiler": "python_locked_v2", "quality_check": quality_report}
             finished_at = pipeline_now()
             state["status"] = "completed"
             state["current_stage"] = "completed"
             state["finished_at"] = finished_at
             state["stages"]["model"] = {"status": "completed", "started_at": started_at, "ended_at": finished_at, "detail": "图片模型已返回素材"}
-            state["stages"]["quality"] = {"status": "completed", "started_at": finished_at, "ended_at": finished_at, "detail": "质量检查完成", "result": quality_report}
+            state["stages"]["quality"]["ended_at"] = finished_at
             pipeline["state"] = state
-            assets = make_assets(product.name, primary_image, product.origin, product.spec, product.tags)
+            assets = make_assets(product.name, accepted_image, product.origin, product.spec, product.tags)
             if assets:
                 assets[0]["pipeline"] = pipeline
             generation.assets = assets
-            generation.pipeline_state = state
+            generation.pipeline_state = dict(state)
             generation.status = "completed"
             db.commit()
             logger.info("pipeline.completed task=%s status=completed", generation_id)
@@ -261,8 +292,12 @@ def run_generation_pipeline(generation_id: str, product_id: str, options: dict[s
             state["current_stage"] = "failed"
             state["finished_at"] = pipeline_now()
             state["error"] = str(exc)[:500]
-            state["stages"]["model"] = {"status": "failed", "started_at": started_at, "ended_at": state["finished_at"], "detail": str(exc)[:200]}
-            generation.pipeline_state = state
+            failed_stage = state.get("stages", {}).get(failure_stage, {})
+            state.setdefault("stages", {})[failure_stage] = {**failed_stage, "status": "failed", "started_at": failed_stage.get("started_at", started_at), "ended_at": state["finished_at"], "detail": str(exc)[:200]}
+            state["quality_check"] = quality_report
+            generation.pipeline_state = dict(state)
+            if candidate_path is not None:
+                candidate_path.unlink(missing_ok=True)
             user = db.get(User, generation.owner_id)
             if user:
                 db.execute(update(User).where(User.id == user.id).values(credit_balance=User.credit_balance + 1))
@@ -673,6 +708,10 @@ def delete_product(product_id: str, user: User = Depends(current_user), db: Sess
 @app.post("/api/generations")
 def create_generation(payload: GenerationPayload, request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     enforce_resource_rate_limit(request, "generation", user.id)
+    try:
+        select_visual_plan(payload.usage, payload.style, payload.tone, payload.composition, payload.background, payload.platform)
+    except VisualPlanError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if user.credit_balance < 1:
         raise HTTPException(status_code=402, detail="生成额度不足，请购买额度包")
     product = db.get(Product, payload.product_id) if payload.product_id else None

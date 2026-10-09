@@ -22,7 +22,7 @@ from sqlalchemy import select
 from app import main as main_module
 from app.main import app
 from app.database import SessionLocal
-from app.models import CreditOrder, EmailVerificationToken, User
+from app.models import CreditOrder, EmailVerificationToken, Generation, Product, User
 
 
 def _login(client: TestClient) -> tuple[str, dict[str, str]]:
@@ -234,6 +234,87 @@ def test_generation_without_real_qwen_fails_without_placeholder_and_refunds(monk
             time.sleep(0.05)
         assert result is not None and result.json()["status"] == "failed"
         assert result.json()["assets"] == []
+        assert client.get("/api/auth/me", headers=headers).json()["credit_balance"] == 1
+
+
+def test_hero_visual_conflict_is_rejected_before_credit_or_product_mutation():
+    with TestClient(app) as client:
+        _, headers = _login(client)
+        with SessionLocal() as db:
+            user = db.scalar(select(User).where(User.email == "demo@xiantu.ai"))
+            assert user is not None
+            user.credit_balance = 1
+            db.commit()
+
+        response = client.post(
+            "/api/generations",
+            headers=headers,
+            json={
+                "product": {"name": "拦截校验柿子", "origin": "", "spec": "", "tags": []},
+                "usage": "hero",
+                "style": "natural",
+                "background": "table",
+            },
+        )
+        assert response.status_code == 422
+        assert "背景必须选择" in response.json()["detail"]
+        assert client.get("/api/auth/me", headers=headers).json()["credit_balance"] == 1
+        with SessionLocal() as db:
+            assert db.scalar(select(Product).where(Product.name == "拦截校验柿子")) is None
+            assert db.scalar(select(Generation.id).join(Product, Generation.product_id == Product.id).where(Product.name == "拦截校验柿子")) is None
+
+
+def test_quality_hard_failure_never_completes_and_refunds(monkeypatch, tmp_path):
+    monkeypatch.setattr(main_module, "is_qwen_configured", lambda: True)
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
+    monkeypatch.setattr(main_module, "UPLOAD_DIR", upload_dir)
+    image_calls = {"generated": 0, "checked": 0}
+
+    def fake_generate(*_args, **_kwargs):
+        image_calls["generated"] += 1
+        return "https://test.invalid/rejected.png"
+
+    def fake_persist(_url, target_dir):
+        filename = f"rejected-{image_calls['generated']}.png"
+        Image.new("RGB", (512, 512), (200, 100, 50)).save(target_dir / filename)
+        return f"/uploads/{filename}"
+
+    def reject_quality(*_args):
+        image_calls["checked"] += 1
+        return {"passed": False, "source": "test", "reasons": ["禁用道具出现"], "hard_failures": ["forbidden_props_absent"]}
+
+    monkeypatch.setattr(main_module, "generate_image", fake_generate)
+    monkeypatch.setattr(main_module, "persist_remote_image", fake_persist)
+    monkeypatch.setattr(main_module, "quality_check_image", reject_quality)
+
+    with TestClient(app) as client:
+        _, headers = _login(client)
+        with SessionLocal() as db:
+            user = db.scalar(select(User).where(User.email == "demo@xiantu.ai"))
+            assert user is not None
+            user.credit_balance = 1
+            db.commit()
+
+        submitted = client.post(
+            "/api/generations",
+            headers=headers,
+            json={"product": {"name": "验收失败柿子", "origin": "", "spec": "", "tags": []}, "usage": "hero", "style": "natural", "background": "clean"},
+        )
+        assert submitted.status_code == 200
+        generation_id = submitted.json()["id"]
+        result = None
+        for _ in range(60):
+            result = client.get(f"/api/generations/{generation_id}", headers=headers)
+            if result.json()["status"] in {"completed", "failed"}:
+                break
+            time.sleep(0.05)
+
+        assert result is not None
+        assert result.json()["status"] == "failed"
+        assert result.json()["assets"] == []
+        assert result.json()["pipeline"]["quality_check"]["passed"] is False
+        assert image_calls == {"generated": 2, "checked": 2}
         assert client.get("/api/auth/me", headers=headers).json()["credit_balance"] == 1
 
 

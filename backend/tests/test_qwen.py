@@ -1,4 +1,7 @@
 from pathlib import Path
+import json
+
+import pytest
 
 from PIL import Image
 
@@ -25,7 +28,38 @@ def test_generation_plan_selects_engine_by_usage():
     assert (hero.image_usage, hero.engine) == ("主图", "版式引擎")
     assert (detail.image_usage, detail.engine) == ("详情图", "场景引擎")
     assert (promo.image_usage, promo.engine) == ("营销图", "创意引擎")
-    assert "单一 SKU" in hero.constraints
+    assert any("单一 SKU" in constraint for constraint in hero.constraints)
+    assert hero.visual is not None and hero.visual.background == "clean"
+
+
+@pytest.mark.parametrize(
+    "options, expected_fragment",
+    [
+        ({"background": "table"}, "背景必须"),
+        ({"background": "farm"}, "背景必须"),
+        ({"background": "festival"}, "背景必须"),
+        ({"style": "farm"}, "场景或装饰"),
+        ({"style": "sale"}, "场景或装饰"),
+        ({"tone": "sale"}, "促销醒目"),
+        ({"composition": "flat-lay"}, "必须居中"),
+    ],
+)
+def test_hero_visual_plan_rejects_background_and_prop_conflicts(options, expected_fragment):
+    with pytest.raises(qwen.VisualPlanError, match=expected_fragment):
+        qwen.select_visual_plan("hero", **options)
+
+
+def test_non_hero_visual_plan_allows_scene_backgrounds():
+    plan = qwen.select_visual_plan("social", style="farm", background="farm", composition="rule-of-thirds")
+    assert plan.background == "farm"
+    assert plan.usage_label == "营销图"
+    assert "生活方式摄影" in plan.usage_direction
+
+
+def test_detail_usage_direction_is_compiled_into_prompt():
+    plan = qwen.compile_generation_plan("牛心柿子", "", "", [], "detail", style="premium", background="table")
+    prompt = qwen.build_image_prompt("牛心柿子", ["橙红果皮"], plan)
+    assert "突出经确认的商品细节" in prompt
 
 
 def test_quality_check_has_file_level_gate(tmp_path: Path):
@@ -85,10 +119,9 @@ def test_generate_apricot_prompt_emphasizes_fresh_gloss(monkeypatch):
     monkeypatch.setattr(qwen, "_request_json", fake_request)
     qwen.generate_image("崂山杏", "山东·青岛崂山", "500g", "hero", "natural")
     prompt = captured["payload"]["input"]["messages"][0]["content"][0]["text"]
-    assert "清透光泽与新鲜感" in prompt
-    assert "不能变成蜡质塑料反光" in prompt
-    assert "极轻薄且均匀的天然绒毛" in prompt
-    assert "黄橙色细腻果肉" in prompt
+    assert "真实细腻果皮" in prompt
+    assert "轻微天然绒毛" in prompt
+    assert "蜡质塑料反光" in prompt
 
 
 def test_generate_image_uses_controlled_commercial_prompt(monkeypatch):
@@ -108,14 +141,16 @@ def test_generate_image_uses_controlled_commercial_prompt(monkeypatch):
     assert image_url == "https://example.com/generated.png"
     assert parameters["prompt_extend"] is False
     assert "negative_prompt" in parameters
-    assert "绝对不要生成任何文字" in prompt
+    assert "绝不渲染任何文字" in prompt
     assert "产品必须是画面唯一主角" in prompt
     assert "圆润体积与立体感" in prompt
     assert "接触阴影" in prompt
     assert "电商主图硬约束" in prompt
-    assert "无缝纯白或极浅灰背景" in prompt
-    assert "不得切开水果" in prompt
-    assert "圆润体积与立体感" in prompt
+    assert "纯白或极浅灰" in prompt
+    assert "不得切开" in prompt
+    assert "主体底部保留自然接触阴影" in prompt
+    assert "产品必须是画面唯一主角" in prompt
+    assert "山东·青岛崂山" not in prompt and "500g" not in prompt
 
 
 def test_generate_image_uses_uploaded_reference_for_product_fidelity(monkeypatch, tmp_path: Path):
@@ -135,6 +170,52 @@ def test_generate_image_uses_uploaded_reference_for_product_fidelity(monkeypatch
     content = captured["payload"]["input"]["messages"][0]["content"]
     assert captured["payload"]["model"] == "qwen-image-2.0-pro"
     assert content[0]["image"].startswith("data:image/jpeg;base64,")
-    assert "唯一且权威的商品参考" in content[1]["text"]
-    assert "严格保留商品的品种" in content[1]["text"]
+    assert "权威商品参考" in content[1]["text"]
+    assert "保持商品身份、数量、轮廓" in content[1]["text"]
     assert image_url == "https://example.com/edited.png"
+
+
+def test_generate_image_prompt_does_not_mix_hero_with_table_props(monkeypatch):
+    with pytest.raises(qwen.VisualPlanError, match="背景必须"):
+        qwen.generate_image("牛心柿子", "青岛", "2500g", "hero", "natural", background="table")
+
+
+def test_quality_check_fails_closed_when_vision_is_unavailable(monkeypatch, tmp_path: Path):
+    source = tmp_path / "valid.png"
+    Image.new("RGB", (512, 512), (240, 240, 240)).save(source)
+    monkeypatch.setattr(qwen, "is_qwen_configured", lambda: False)
+    result = qwen.quality_check_image(source, "牛心柿子", "hero")
+    assert result["passed"] is False
+    assert "vision_qa_unavailable" in result["hard_failures"]
+
+
+def test_quality_check_requires_every_hard_check_to_be_literal_true(monkeypatch, tmp_path: Path):
+    source = tmp_path / "valid.png"
+    Image.new("RGB", (512, 512), (240, 240, 240)).save(source)
+    monkeypatch.setattr(qwen, "is_qwen_configured", lambda: True)
+    plan = qwen.compile_generation_plan("牛心柿子", "", "", [], "hero")
+    assert plan.visual is not None
+    good = {key: True for key in plan.visual.hard_checks}
+    good.update({"passed": True, "reasons": []})
+    monkeypatch.setattr(qwen, "_request_json", lambda *args: {"choices": [{"message": {"content": json.dumps(good, ensure_ascii=False)}}]})
+    accepted = qwen.quality_check_image(source, "牛心柿子", "hero", plan=plan)
+    assert accepted["passed"] is True
+
+    bad = dict(good)
+    bad["forbidden_props_absent"] = False
+    monkeypatch.setattr(qwen, "_request_json", lambda *args: {"choices": [{"message": {"content": json.dumps(bad, ensure_ascii=False)}}]})
+    rejected = qwen.quality_check_image(source, "牛心柿子", "hero", plan=plan)
+    assert rejected["passed"] is False
+    assert "forbidden_props_absent" in rejected["hard_failures"]
+
+
+def test_quality_check_does_not_truthify_string_false(monkeypatch, tmp_path: Path):
+    source = tmp_path / "valid.png"
+    Image.new("RGB", (512, 512), (240, 240, 240)).save(source)
+    monkeypatch.setattr(qwen, "is_qwen_configured", lambda: True)
+    plan = qwen.compile_generation_plan("牛心柿子", "", "", [], "hero")
+    response = {key: True for key in plan.visual.hard_checks}
+    response.update({"passed": "false", "reasons": []})
+    monkeypatch.setattr(qwen, "_request_json", lambda *args: {"choices": [{"message": {"content": json.dumps(response)}}]})
+    result = qwen.quality_check_image(source, "牛心柿子", "hero", plan=plan)
+    assert result["passed"] is False
