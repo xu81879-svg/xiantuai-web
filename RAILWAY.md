@@ -20,6 +20,16 @@ AUTO_CREATE_SCHEMA=false
 SEED_DEMO_USER=false
 LOCAL_STORAGE_DIR=/app/data
 CORS_ORIGINS=https://你的 Railway 域名
+# 可选但生产多 worker/多副本推荐：添加 Redis 服务并用 Add Reference 设置
+REDIS_URL=${{Redis.REDIS_URL}}
+# 生产注册必须配置 SMTP；凭据请使用 Railway Secret，不要写入 Git
+SMTP_HOST=你的 SMTP 主机
+SMTP_PORT=587
+SMTP_USERNAME=你的 SMTP 用户名
+SMTP_PASSWORD=请配置为 Railway Secret
+SMTP_FROM=鲜图 AI <no-reply@你的域名>
+SMTP_STARTTLS=true
+SMTP_TIMEOUT_SECONDS=10
 QWEN_API_KEY=请配置为 Railway Secret
 QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 QWEN_MULTIMODAL_MODEL=qwen3-vl-plus
@@ -70,7 +80,9 @@ PGSSLMODE=require
 
 发布日志应依次看到 `alembic upgrade head` 成功、Uvicorn 启动成功，随后 `/readyz` 返回 `{"status":"ready"}`。如果迁移失败，先检查 Web Service 与数据库服务是否位于同一个 Railway Project，以及 reference variable 中的服务名是否完全一致。
 
-当前会员升级采用 PayPal 一次性额度包，不做自动续费：尝鲜包 20 次、专业包 100 次、商家包 300 次。生产环境需要创建 PayPal REST App，配置 Client ID、Client Secret 和 Webhook ID，并将 `PUBLIC_APP_URL` 设置为真实 HTTPS 域名；`PAYPAL_MOCK_MODE` 只能在本地开发使用。前端通过 PayPal JavaScript SDK 嵌入按钮，后端仍负责创建订单、捕获订单、金额校验和幂等入账；Webhook 用于补偿用户关闭页面后的异步支付完成事件。
+当前会员升级采用 PayPal 一次性额度包，不做自动续费：尝鲜包 20 次、专业包 100 次、商家包 300 次。生产环境需要创建 PayPal REST App，配置 Client ID、Client Secret 和 Webhook ID，并将 `PUBLIC_APP_URL` 设置为真实 HTTPS 域名。代码会在生产环境拒绝 Mock 与 Sandbox 下单/入账，只允许准确的 PayPal Live API 主机；额度面板显示后端报告的真实支付模式、余额和订单历史。前端通过 PayPal JavaScript SDK 嵌入按钮，后端仍负责创建订单、捕获订单、严格核对订单归属/金额/币种和幂等入账；Webhook 用于补偿用户关闭页面后的异步支付完成事件。
+
+生产注册需要配置 SMTP 主机、发件地址和 `PUBLIC_APP_URL`；验证令牌 30 分钟过期、数据库只保存令牌哈希。未完成邮箱验证的账户不能登录，也不会获得初始额度；没有 SMTP 配置时注册会返回 503，不会静默跳过验证。迁移会把已有账户标记为已验证并保留其当前余额。Redis 配置可让登录、注册/重发验证和高成本图片接口限流跨进程共享；没有 Redis 时会回退到进程内限流，因此生产多 worker/多副本应配置共享 Redis，并确认 Railway 代理可信客户端地址由 Uvicorn 正确传递。
 
 PayPal Developer Dashboard 的生产 Webhook URL 必须设置为：
 
@@ -78,7 +90,7 @@ PayPal Developer Dashboard 的生产 Webhook URL 必须设置为：
 https://你的 Railway 公共域名/api/webhooks/paypal
 ```
 
-至少勾选 `PAYMENT.CAPTURE.COMPLETED` 事件，并将该 Webhook 生成的 ID 填入 `PAYPAL_WEBHOOK_ID`。上线核验顺序为：`GET /readyz` 返回 `{"status":"ready"}`；`GET /api/billing/paypal/config`（需登录）返回 `enabled: true` 且 `client_id` 非空；PayPal Dashboard 中的 Webhook 状态为已启用；最后使用 PayPal Sandbox/Live 的 Webhook Simulator 或真实小额订单确认回调返回 2xx。不要把 Client Secret 或 Webhook ID 写入前端或 Git。
+至少勾选 `PAYMENT.CAPTURE.COMPLETED` 事件，并将该 Webhook 生成的 ID 填入 `PAYPAL_WEBHOOK_ID`。上线核验顺序为：`GET /readyz` 返回 `{"status":"ready"}`；`GET /api/billing/paypal/config`（需登录）返回 `mode: "live"`、`enabled: true` 且 `client_id` 非空；PayPal Dashboard 中的 Webhook 状态为已启用；最后在确认 Live 配置后使用受控的小额订单检查回调。不要把 Client Secret 或 Webhook ID 写入前端或 Git。
 
 部署后可从本地或 CI 执行健康检查脚本：
 
@@ -142,7 +154,7 @@ SMOKE_AUTH_MODE=login SMOKE_EMAIL=you@example.com SMOKE_PASSWORD='你的密码' 
 
 ## 文件上传持久化
 
-当前 MVP 将上传图片保存到 `LOCAL_STORAGE_DIR`。Railway 默认容器文件系统不是长期对象存储，因此上线时建议给 Web Service 添加 Volume，并将挂载路径设置为 `/app/data`。后续接入 S3 / Cloudflare R2 / 阿里云 OSS 时，只需要替换 `recognize_product` 的文件保存实现，数据库中的 `image_url` 契约保持不变。
+当前 MVP 将上传图片保存到 `LOCAL_STORAGE_DIR`。Railway 默认容器文件系统不是长期对象存储，因此必须给 Web Service 添加 Volume，并将挂载路径设置为 `/app/data`，与变量值一致。API 与独立 Celery Worker/多副本必须读写同一持久存储；Railway Volume 不是跨服务共享对象存储，多实例时应迁移到 S3/Cloudflare R2/OSS。前端现在会对失效图片显示明确占位图，但这只改善展示：挂载 Volume 无法恢复已丢失的旧文件，旧图片需从备份恢复或重新生成。当前真实生成记录只保存实际落盘的 Qwen 图片，不再拿通用水果图补成“五张成品”。
 
 ## 亚洲客户默认策略
 

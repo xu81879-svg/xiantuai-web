@@ -65,6 +65,7 @@ if [[ -n "$ENV_FILE" ]]; then
   required=(
     ENVIRONMENT DEBUG DATABASE_URL PGSSLMODE JWT_SECRET JWT_EXPIRE_MINUTES
     AUTO_CREATE_SCHEMA SEED_DEMO_USER LOCAL_STORAGE_DIR CORS_ORIGINS
+    SMTP_HOST SMTP_PORT SMTP_USERNAME SMTP_PASSWORD SMTP_FROM SMTP_STARTTLS SMTP_TIMEOUT_SECONDS
     QWEN_API_KEY QWEN_BASE_URL QWEN_IMAGE_BASE_URL QWEN_VISION_MODEL
     QWEN_IMAGE_MODEL QWEN_IMAGE_SIZE QWEN_TIMEOUT_SECONDS QWEN_MOCK_FALLBACK
     PAYPAL_BASE_URL PAYPAL_CLIENT_ID PAYPAL_CLIENT_SECRET PAYPAL_WEBHOOK_ID
@@ -78,6 +79,8 @@ if [[ -n "$ENV_FILE" ]]; then
     pass "$key 已设置"
   done
 
+  [[ -n "${ENV_VALUES[REDIS_URL]-}" ]] || warn 'REDIS_URL 未设置；认证和媒体限流仅在单进程内共享，多副本部署应配置 Redis'
+
   [[ "${ENV_VALUES[ENVIRONMENT]-}" == "production" ]] || fail "ENVIRONMENT 必须为 production"
   [[ "${ENV_VALUES[DEBUG]-}" == "false" ]] || fail "DEBUG 必须为 false"
   [[ "${ENV_VALUES[AUTO_CREATE_SCHEMA]-}" == "false" ]] || fail "AUTO_CREATE_SCHEMA 必须为 false"
@@ -85,6 +88,7 @@ if [[ -n "$ENV_FILE" ]]; then
   [[ "${ENV_VALUES[QWEN_MOCK_FALLBACK]-}" == "false" ]] || fail "QWEN_MOCK_FALLBACK 必须为 false"
   [[ "${ENV_VALUES[PAYPAL_MOCK_MODE]-}" == "false" ]] || fail "PAYPAL_MOCK_MODE 必须为 false"
   [[ "${ENV_VALUES[PAYPAL_BASE_URL]-}" == "https://api-m.paypal.com" ]] || fail "生产 PAYPAL_BASE_URL 必须为 https://api-m.paypal.com"
+  [[ "${ENV_VALUES[SMTP_STARTTLS]-}" == "true" ]] || fail "SMTP_STARTTLS 必须为 true"
   [[ "${ENV_VALUES[PUBLIC_APP_URL]-}" == https://* ]] || fail "PUBLIC_APP_URL 必须是 HTTPS 地址"
   [[ "${ENV_VALUES[CORS_ORIGINS]-}" == https://* ]] || fail "CORS_ORIGINS 必须是 HTTPS 地址"
   [[ "${ENV_VALUES[JWT_SECRET]-}" != *'请替换'* && ${#ENV_VALUES[JWT_SECRET]} -ge 32 ]] || fail "JWT_SECRET 长度必须至少 32 位且不能是占位值"
@@ -114,7 +118,20 @@ if payload.get('status') != sys.argv[3]:
 PY
     pass "$path 返回 status=$expected"
   }
+  check_storage_writable() {
+    local file
+    file="$(get_json '/api/health')" || return
+    python3 - "$file" <<'PY' || { fail '/api/health storage_writable 不是 true'; return; }
+import json, sys
+with open(sys.argv[1], encoding='utf-8') as handle:
+    payload = json.load(handle)
+if payload.get('storage_writable') is not True:
+    raise SystemExit(1)
+PY
+    pass '/api/health storage_writable=true'
+  }
   check_status '/api/health' 'ok'
+  check_storage_writable
   check_status '/readyz' 'ready'
 
   email="${RAILWAY_CHECK_EMAIL:-}"
@@ -146,13 +163,14 @@ PY
         if [[ "$config_status" != 2* ]]; then
           fail "PayPal 配置接口返回 HTTP $config_status"
         else
-          enabled="$(python3 - "$config_file" <<'PY'
+          runtime="$(python3 - "$config_file" <<'PY'
 import json, sys
 with open(sys.argv[1], encoding='utf-8') as handle:
-    print(json.load(handle).get('enabled', False))
+    config = json.load(handle)
+print(f"{str(config.get('enabled', False)).lower()} {config.get('mode', '')}")
 PY
 )"
-          if [[ "$enabled" == true ]]; then pass '线上 PayPal runtime config enabled=true'; else fail '线上 PayPal runtime config enabled=false（请检查 Client ID/Secret）'; fi
+          if [[ "$runtime" == "true live" ]]; then pass '线上 PayPal runtime config 为 Live 且 enabled=true'; else fail '线上 PayPal runtime config 不是可用的 Live 模式（请检查 Client ID/Secret/Base URL）'; fi
         fi
       fi
     fi

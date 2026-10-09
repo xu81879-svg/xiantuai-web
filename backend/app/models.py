@@ -23,7 +23,8 @@ class User(Base):
     locale: Mapped[str] = mapped_column(String(12), default="zh-CN")
     timezone: Mapped[str] = mapped_column(String(64), default="Asia/Shanghai")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    credit_balance: Mapped[int] = mapped_column(Integer, default=10)
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    credit_balance: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
     products: Mapped[list["Product"]] = relationship(back_populates="owner", cascade="all, delete-orphan")
@@ -103,6 +104,17 @@ class CreditPlan(Base):
     currency: Mapped[str] = mapped_column(String(3), default="USD")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
+class EmailVerificationToken(Base):
+    __tablename__ = "email_verification_tokens"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
 
