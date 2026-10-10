@@ -13,6 +13,7 @@ type Generation = { id: string; status: string; usage: string; style: string; co
 type TemplateItem = { id: string; title: string; category: string; description: string; preview_url: string; usage: string; style: string }
 type HelpItem = { id: string; category: string; question: string; answer: string }
 type CreditPlan = { code: string; name: string; description: string; credits: number; amount: string; currency: string }
+type CreditOrder = { id: string; plan_code: string; status: string; credits: number; amount: string; currency: string; created_at?: string | null }
 type PosterTheme = { id: string; title: string; desc: string; kicker: string; accent: string; panel: string; tag: string; meta: string }
 type MarketingTemplate = { id: string; title: string; desc: string; theme: string; copy: { kicker: string; title: string; subtitle: string; tags: string } }
 type PipelineStage = { id: string; label: string; status: 'pending' | 'active' | 'completed' | 'failed'; detail: string; startedAt?: number; endedAt?: number; durationMs?: number }
@@ -24,6 +25,8 @@ const authenticated = ref(staticPreview)
 const authMode = ref<'login' | 'register'>('login')
 const authLoading = ref(false)
 const authError = ref('')
+const authSuccess = ref('')
+const authVerificationUrl = ref('')
 const demoEmail = import.meta.env.VITE_DEMO_EMAIL || ''
 const demoPassword = import.meta.env.VITE_DEMO_PASSWORD || ''
 const showDemoTip = (import.meta.env.DEV || staticPreview) && Boolean(demoEmail && demoPassword)
@@ -62,6 +65,11 @@ const creditPlans = ref<CreditPlan[]>([])
 const creditBalance = ref(staticPreview ? 10 : 0)
 const showBilling = ref(false)
 const billingLoading = ref(false)
+const billingError = ref('')
+const billingMessage = ref('')
+const billingMode = ref('unconfigured')
+const billingOrders = ref<CreditOrder[]>([])
+const paypalEnabled = ref(false)
 const paypalClientId = ref('')
 const paypalCurrency = ref('USD')
 const paypalOrderIds = new Map<string, string>()
@@ -160,11 +168,21 @@ function authHeaders(extra: HeadersInit = {}): HeadersInit {
 async function submitAuth() {
   authLoading.value = true
   authError.value = ''
+  authSuccess.value = ''
+  authVerificationUrl.value = ''
   try {
     const endpoint = authMode.value === 'login' ? '/auth/login' : '/auth/register'
     const response = await fetch(`${API_BASE}${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(authForm.value) })
     const data = await response.json()
     if (!response.ok) throw new Error(data.detail || '操作失败')
+    if (authMode.value === 'register' && data.verification_required) {
+      authSuccess.value = data.message || '请查看邮箱完成验证后再登录。'
+      authVerificationUrl.value = data.debug_verification_url || ''
+      authMode.value = 'login'
+      authForm.value.password = ''
+      return
+    }
+    if (!data.access_token) throw new Error('服务器未返回登录凭据')
     authToken.value = data.access_token
     localStorage.setItem('xiantu_token', data.access_token)
     authenticated.value = true
@@ -178,6 +196,44 @@ async function submitAuth() {
   }
 }
 
+async function resendVerification() {
+  authLoading.value = true
+  authError.value = ''
+  authSuccess.value = ''
+  authVerificationUrl.value = ''
+  try {
+    const response = await fetch(`${API_BASE}/auth/resend-verification`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: authForm.value.email }),
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.detail || '验证邮件发送失败')
+    authSuccess.value = data.message || '如果该邮箱存在且尚未验证，我们会发送验证邮件。'
+    authVerificationUrl.value = data.debug_verification_url || ''
+  } catch (error) {
+    authError.value = error instanceof Error ? error.message : '验证邮件发送失败'
+  } finally {
+    authLoading.value = false
+  }
+}
+
+function replaceBrokenImage(event: Event) {
+  const image = event.currentTarget as HTMLImageElement
+  image.onerror = null
+  image.alt = '图片暂不可用'
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="420" viewBox="0 0 640 420"><rect width="640" height="420" fill="#edf3ef"/><path d="M250 250l55-65 45 50 38-42 72 82H180z" fill="#bdd2c3"/><circle cx="390" cy="145" r="24" fill="#d3e2d7"/><text x="320" y="330" text-anchor="middle" font-family="sans-serif" font-size="22" fill="#66766c">图片暂不可用</text></svg>'
+  image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
+}
+
+function billingModeLabel(mode: string) {
+  return ({ live: 'PayPal Live 真实支付', sandbox: 'PayPal Sandbox 测试', mock: '演示模式（无真实扣款）', unconfigured: '未配置', custom: '自定义支付端点', preview: '静态预览' } as Record<string, string>)[mode] || '未知状态'
+}
+
+function creditOrderStatus(status: string) {
+  return ({ pending: '待支付', completed: '已完成', failed: '失败' } as Record<string, string>)[status] || status
+}
+
 function logout() {
   authToken.value = ''
   localStorage.removeItem('xiantu_token')
@@ -186,6 +242,13 @@ function logout() {
 
 onMounted(async () => {
   loadRecognitionHistory()
+  const params = new URLSearchParams(window.location.search)
+  if (params.get('email_verified') === '1') {
+    notice.value = '邮箱验证成功，请登录鲜图 AI。'
+    params.delete('email_verified')
+    window.history.replaceState({}, '', `${window.location.pathname}${params.toString() ? `?${params}` : ''}`)
+  }
+  if (params.get('paypal_cancelled') === '1') notice.value = '你已取消 PayPal 支付，额度没有变化。'
   if (!authToken.value) return
   try {
     const response = await fetch(`${API_BASE}/auth/me`, { headers: authHeaders() })
@@ -193,9 +256,8 @@ onMounted(async () => {
     if (response.ok) {
       await loadWorkspaceData()
       await loadBilling()
-      const params = new URLSearchParams(window.location.search)
       const localOrderId = params.get('paypal_order_id')
-      const paypalOrderId = params.get('token') || localOrderId
+      const paypalOrderId = params.get('token')
       if (localOrderId && paypalOrderId) await capturePayPalOrder(localOrderId, paypalOrderId)
     }
   } catch {
@@ -205,39 +267,62 @@ onMounted(async () => {
 
 async function loadBilling() {
   if (staticPreview || !authToken.value) return
-  const response = await fetch(`${API_BASE}/billing/plans`, { headers: authHeaders() })
-  if (!response.ok) return
-  const data = await response.json()
-  creditPlans.value = data.items ?? []
-  creditBalance.value = data.credit_balance ?? 0
+  billingLoading.value = true
+  billingError.value = ''
+  try {
+    const [plansResponse, accountResponse, configResponse] = await Promise.all([
+      fetch(`${API_BASE}/billing/plans`, { headers: authHeaders() }),
+      fetch(`${API_BASE}/billing/me`, { headers: authHeaders() }),
+      fetch(`${API_BASE}/billing/paypal/config`, { headers: authHeaders() }),
+    ])
+    const [plans, account, config] = await Promise.all([
+      plansResponse.json(), accountResponse.json(), configResponse.json(),
+    ])
+    if (!plansResponse.ok || !accountResponse.ok || !configResponse.ok) {
+      throw new Error(account.detail || plans.detail || config.detail || '无法读取真实额度状态')
+    }
+    creditPlans.value = plans.items ?? []
+    creditBalance.value = account.credit_balance ?? 0
+    billingOrders.value = account.orders ?? []
+    billingMode.value = config.mode || 'unconfigured'
+    billingMessage.value = config.message || '支付状态未知。'
+    paypalClientId.value = config.client_id || ''
+    paypalCurrency.value = config.currency || 'USD'
+    paypalEnabled.value = Boolean(config.enabled && paypalClientId.value)
+    return true
+  } catch (error) {
+    billingError.value = error instanceof Error ? error.message : '无法读取真实额度状态'
+    paypalEnabled.value = false
+    return false
+  } finally {
+    billingLoading.value = false
+  }
 }
 
 async function openBilling() {
+  showBilling.value = true
+  billingError.value = ''
   if (staticPreview) {
     creditPlans.value = previewPlans
-    showBilling.value = true
-    notice.value = '预览模式：可模拟购买额度包，正式环境将切换为 PayPal 支付'
+    billingMode.value = 'preview'
+    billingMessage.value = '静态预览：套餐仅作展示，不会创建订单、扣款或增加额度。'
+    billingOrders.value = []
     return
   }
-  await loadBilling()
-  showBilling.value = true
+  const loaded = await loadBilling()
   await nextTick()
-  await renderPaypalButtons()
+  if (loaded && paypalEnabled.value) await renderPaypalButtons()
 }
 
 async function loadPaypalSdk() {
-  const configResponse = await fetch(`${API_BASE}/billing/paypal/config`, { headers: authHeaders() })
-  if (!configResponse.ok) return false
-  const config = await configResponse.json()
-  paypalClientId.value = config.client_id || ''
-  paypalCurrency.value = config.currency || 'USD'
-  if (!paypalClientId.value || !config.enabled) return false
+  if (!paypalEnabled.value || !paypalClientId.value) return false
   if (window.paypal) return true
   await new Promise<void>((resolve, reject) => {
     const script = document.createElement('script')
     script.src = `https://www.paypal.com/sdk/js?client-id=${encodeURIComponent(paypalClientId.value)}&currency=${encodeURIComponent(paypalCurrency.value)}&intent=capture&components=buttons`
-    script.onload = () => resolve()
-    script.onerror = () => reject(new Error('PayPal SDK 加载失败'))
+    const timeout = window.setTimeout(() => reject(new Error('PayPal SDK 加载超时')), 12000)
+    script.onload = () => { window.clearTimeout(timeout); resolve() }
+    script.onerror = () => { window.clearTimeout(timeout); reject(new Error('PayPal SDK 加载失败')) }
     document.head.appendChild(script)
   })
   return Boolean(window.paypal)
@@ -245,16 +330,15 @@ async function loadPaypalSdk() {
 
 async function renderPaypalButtons() {
   try {
-    if (!(await loadPaypalSdk()) || !window.paypal) return
+    if (!paypalEnabled.value || !(await loadPaypalSdk()) || !window.paypal) return
     for (const plan of creditPlans.value) {
       const host = document.getElementById(`paypal-button-${plan.code}`)
       if (!host || host.dataset.rendered === 'true') continue
-      host.dataset.rendered = 'true'
-      await window.paypal.Buttons({
+      const buttons = window.paypal.Buttons({
         style: { layout: 'vertical', shape: 'rect', label: 'paypal', height: 38 },
         createOrder: async () => {
           const response = await fetch(`${API_BASE}/billing/paypal/orders`, { method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ plan_code: plan.code }) })
-          const data = await response.json()
+          const data = await response.json().catch(() => ({}))
           if (!response.ok || !data.paypal_order_id) throw new Error(data.detail || 'PayPal 订单创建失败')
           paypalOrderIds.set(plan.code, data.order.id)
           return data.paypal_order_id
@@ -262,53 +346,38 @@ async function renderPaypalButtons() {
         onApprove: async (data: { orderID: string }) => {
           const localOrderId = paypalOrderIds.get(plan.code)
           if (localOrderId) await capturePayPalOrder(localOrderId, data.orderID)
+          else notice.value = '订单状态丢失，请刷新额度面板后检查订单记录。'
         },
         onCancel: () => { notice.value = '你已取消 PayPal 支付' },
         onError: (error: unknown) => { notice.value = error instanceof Error ? error.message : 'PayPal 支付失败，请稍后重试' },
-      }).render(`#paypal-button-${plan.code}`)
+      })
+      await buttons.render(host)
+      host.dataset.rendered = 'true'
     }
   } catch (error) {
     notice.value = error instanceof Error ? error.message : 'PayPal 按钮加载失败'
-  }
-}
-
-async function purchasePlan(plan: CreditPlan) {
-  billingLoading.value = true
-  try {
-    if (staticPreview) {
-      await new Promise((resolve) => window.setTimeout(resolve, 350))
-      creditBalance.value += plan.credits
-      showBilling.value = false
-      notice.value = `模拟购买成功，已增加 ${plan.credits} 次额度`
-      return
-    }
-    const response = await fetch(`${API_BASE}/billing/paypal/orders`, { method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ plan_code: plan.code }) })
-    const data = await response.json()
-    if (!response.ok) throw new Error(data.detail || 'PayPal 订单创建失败')
-    if (data.approval_url) {
-      window.location.href = data.approval_url
-      return
-    }
-    creditBalance.value = data.credit_balance ?? creditBalance.value
-    showBilling.value = false
-    notice.value = `额度包已到账，可生成 ${creditBalance.value} 次素材`
-  } catch (error) {
-    notice.value = error instanceof Error ? error.message : '购买失败，请稍后重试'
-  } finally {
-    billingLoading.value = false
+    billingError.value = notice.value
   }
 }
 
 async function capturePayPalOrder(localOrderId: string, paypalOrderId: string) {
-  const response = await fetch(`${API_BASE}/billing/paypal/orders/${localOrderId}/capture`, { method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ paypal_order_id: paypalOrderId }) })
-  const data = await response.json().catch(() => ({}))
-  if (response.ok) {
-    creditBalance.value = data.credit_balance ?? creditBalance.value
-    showBilling.value = false
-    notice.value = `PayPal 支付成功，当前剩余 ${creditBalance.value} 次额度`
-    window.history.replaceState({}, '', window.location.pathname)
-  } else {
-    notice.value = data.detail || 'PayPal 支付尚未完成'
+  try {
+    const response = await fetch(`${API_BASE}/billing/paypal/orders/${localOrderId}/capture`, { method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ paypal_order_id: paypalOrderId }) })
+    const data = await response.json().catch(() => ({}))
+    if (response.ok) {
+      const refreshed = await loadBilling()
+      if (!refreshed && typeof data.credit_balance === 'number') creditBalance.value = data.credit_balance
+      showBilling.value = false
+      notice.value = `PayPal 支付成功，当前剩余 ${creditBalance.value} 次额度`
+      window.history.replaceState({}, '', window.location.pathname)
+    } else {
+      notice.value = data.detail || 'PayPal 支付尚未完成'
+      await loadBilling()
+    }
+  } catch (error) {
+    notice.value = error instanceof Error ? `订单状态暂不可用：${error.message}` : '订单状态暂不可用，请稍后刷新'
+    billingError.value = notice.value
+    await loadBilling()
   }
 }
 
@@ -453,6 +522,8 @@ async function recognize(file: File) {
   if (isRecognizing.value) return
   isRecognizing.value = true
   notice.value = '图片已上传，AI 正在识别商品信息…'
+  const requestStarted = performance.now()
+  let recognitionId = 'unknown'
   try {
     const form = new FormData()
     form.append('file', file)
@@ -462,6 +533,7 @@ async function recognize(file: File) {
       throw new Error(error.detail || '图片识别失败')
     }
     const data = await response.json()
+    recognitionId = data.recognition_id ?? 'unknown'
     product.value = { ...product.value, ...data, tags: data.tags ?? product.value.tags }
     if (data.image_url) { product.value.image_url = data.image_url; productImage.value = data.image_url }
     recordRecognition(product.value)
@@ -470,6 +542,10 @@ async function recognize(file: File) {
   } catch (error) {
     notice.value = staticPreview ? '静态预览模式：这里会连接真实 AI 识别服务' : (error instanceof Error ? error.message : '图片识别失败，请稍后重试')
   } finally {
+    console.info('product_recognition_client_timing', {
+      recognition_id: recognitionId,
+      api_roundtrip_ms: Math.round(performance.now() - requestStarted),
+    })
     isRecognizing.value = false
   }
 }
@@ -694,8 +770,11 @@ async function downloadComposedAsset(asset: Result) {
         <p class="auth-subtitle">面向亚洲生鲜商家的商品视觉工作台</p>
         <label v-if="authMode === 'register'" class="auth-input"><span>商家名称</span><input v-model="authForm.display_name" placeholder="例如：青岛鲜果铺" /></label>
         <label class="auth-input"><span>邮箱</span><input v-model="authForm.email" type="email" placeholder="name@company.com" /></label>
-        <label class="auth-input"><span>密码</span><input v-model="authForm.password" type="password" placeholder="至少 8 位字符" @keyup.enter="submitAuth" /></label>
+        <label class="auth-input"><span>密码</span><input v-model="authForm.password" type="password" :placeholder="authMode === 'register' ? '至少 12 位字符' : '请输入密码'" @keyup.enter="submitAuth" /></label>
         <p v-if="authError" class="auth-error">{{ authError }}</p>
+        <p v-if="authSuccess" class="auth-success">{{ authSuccess }}</p>
+        <a v-if="authVerificationUrl" class="auth-verification-link" :href="authVerificationUrl" target="_blank" rel="noopener noreferrer">开发环境：打开验证链接</a>
+        <button v-if="authMode === 'login' && authError.includes('请先验证邮箱')" class="auth-resend" :disabled="authLoading" @click="resendVerification">重新发送验证邮件</button>
         <button class="auth-submit" :disabled="authLoading" @click="submitAuth">{{ authLoading ? '处理中…' : (authMode === 'login' ? '登录工作台' : '注册并开始使用') }}</button>
         <button class="auth-switch" @click="authMode = authMode === 'login' ? 'register' : 'login'; authError = ''">{{ authMode === 'login' ? '还没有账户？立即注册' : '已有账户？返回登录' }}</button>
         <small v-if="showDemoTip" class="demo-tip">开发演示账号：demo@xiantu.ai / Demo123456!</small>
@@ -708,15 +787,28 @@ async function downloadComposedAsset(asset: Result) {
         <span class="eyebrow">PAYPAL CREDIT PACKS</span>
         <h2>购买生成额度</h2>
         <p class="billing-subtitle">当前余额 <b>{{ creditBalance }}</b> 次 · 一次购买，不自动续费</p>
+        <p class="billing-mode"><b>支付状态：{{ billingModeLabel(billingMode) }}</b> · {{ billingMessage }}</p>
+        <small v-if="billingLoading" class="billing-loading">正在从账户服务核对余额与订单…</small>
+        <small v-if="billingError" class="billing-error">{{ billingError }}</small>
         <div class="billing-grid">
           <article v-for="plan in creditPlans" :key="plan.code" class="billing-card">
             <h3>{{ plan.name }}</h3><p>{{ plan.description }}</p><strong>{{ plan.credits }} 次</strong><span>{{ plan.currency }} {{ plan.amount }}</span>
             <div :id="`paypal-button-${plan.code}`" class="paypal-button-slot"></div>
-            <button v-if="staticPreview && !paypalClientId" :disabled="billingLoading" @click="purchasePlan(plan)">{{ billingLoading ? '处理中…' : '本地模拟购买' }}</button>
-            <small v-else-if="!paypalClientId" class="paypal-unavailable">PayPal 尚未启用，请联系管理员</small>
+            <small v-if="billingMode === 'preview'" class="paypal-unavailable">预览模式：不创建订单、不扣款、不增加额度</small>
+            <small v-else-if="!paypalEnabled" class="paypal-unavailable">{{ billingMessage || '真实支付暂不可用' }}</small>
           </article>
         </div>
-        <small class="billing-note">支付由 PayPal 处理，额度仅在 PayPal 支付完成后到账。</small>
+        <h3 class="billing-orders-title">最近订单</h3>
+        <div v-if="billingOrders.length" class="billing-order-list">
+          <article v-for="order in billingOrders" :key="order.id" class="billing-order-row">
+            <span>{{ order.plan_code }} · {{ order.credits }} 次</span>
+            <span>{{ order.currency }} {{ order.amount }}</span>
+            <b :class="`order-${order.status}`">{{ creditOrderStatus(order.status) }}</b>
+            <small>{{ order.created_at ? new Date(order.created_at).toLocaleString('zh-CN') : '时间未知' }}</small>
+          </article>
+        </div>
+        <p v-else class="billing-empty-orders">{{ billingLoading ? '正在加载订单…' : '暂无支付订单' }}</p>
+        <small class="billing-note">额度余额和订单状态均由服务端返回；只有经 PayPal 验证的完成支付才会入账。</small>
       </section>
     </div>
     <header class="topbar">
@@ -740,7 +832,7 @@ async function downloadComposedAsset(asset: Result) {
           <p>当前剩余 {{ creditBalance }} 次<br />购买额度包即可继续创作</p>
           <button @click="openBilling">购买额度</button>
         </div>
-        <button class="brand-card" @click="notice = '鲜图 AI：让生鲜商家更轻松地卖货'"><img src="https://images.unsplash.com/photo-1542838132-92c53300491e?auto=format&fit=crop&w=180&q=80" alt="生鲜商品" /><span><b>鲜图 AI</b><small>让生鲜商家<br />更轻松地卖货</small></span></button>
+        <button class="brand-card" @click="notice = '鲜图 AI：让生鲜商家更轻松地卖货'"><img src="https://images.unsplash.com/photo-1542838132-92c53300491e?auto=format&fit=crop&w=180&q=80" alt="生鲜商品"  @error="replaceBrokenImage" /><span><b>鲜图 AI</b><small>让生鲜商家<br />更轻松地卖货</small></span></button>
         <div class="fresh-note"><span>好 生 鲜</span><b>需要好图片</b><div class="scribble">↗</div><div class="scenery"></div></div>
       </aside>
 
@@ -748,24 +840,24 @@ async function downloadComposedAsset(asset: Result) {
         <section v-if="activeNav === '我的商品' || activeNav === '我的产品'" class="data-page">
           <div class="data-page-header"><div><span class="eyebrow">PRODUCTS</span><h1>我的商品</h1><p>管理已保存的生鲜商品，生成时会自动使用最新信息。</p></div><button class="primary-small" @click="activeNav = '首页'">＋ 新建商品</button></div>
           <div class="data-toolbar"><input v-model="listSearch" placeholder="搜索商品名称或产地" @keyup.enter="loadWorkspaceData" /><button @click="loadWorkspaceData">搜索</button><span v-if="listLoading">正在同步…</span><span v-else>共 {{ products.length }} 个商品</span></div>
-          <div v-if="products.length" class="product-list"><article v-for="item in products" :key="item.id" class="product-list-card"><img :src="item.image_url || productImage" :alt="item.name" /><div class="product-list-copy"><h3>{{ item.name }}</h3><p>{{ item.origin }} · {{ item.spec }}</p><div class="list-tags"><span v-for="tag in item.tags" :key="tag">{{ tag }}</span></div><small>更新于 {{ item.updated_at ? new Date(item.updated_at).toLocaleDateString('zh-CN') : '刚刚' }}</small></div><div class="list-actions"><button @click="selectProduct(item)">编辑并使用</button><button class="danger-link" @click="removeProduct(item)">删除</button></div></article></div>
+          <div v-if="products.length" class="product-list"><article v-for="item in products" :key="item.id" class="product-list-card"><img :src="item.image_url || productImage" :alt="item.name"  @error="replaceBrokenImage" /><div class="product-list-copy"><h3>{{ item.name }}</h3><p>{{ item.origin }} · {{ item.spec }}</p><div class="list-tags"><span v-for="tag in item.tags" :key="tag">{{ tag }}</span></div><small>更新于 {{ item.updated_at ? new Date(item.updated_at).toLocaleDateString('zh-CN') : '刚刚' }}</small></div><div class="list-actions"><button @click="selectProduct(item)">编辑并使用</button><button class="danger-link" @click="removeProduct(item)">删除</button></div></article></div>
           <div v-else class="empty-state"><div>▧</div><h3>还没有保存的商品</h3><p>回到首页编辑商品信息，点击生成时会自动保存。</p><button class="primary-small" @click="activeNav = '首页'">开始添加商品</button></div>
         </section>
         <section v-else-if="activeNav === '素材库'" class="data-page">
           <div class="data-page-header"><div><span class="eyebrow">ASSET LIBRARY</span><h1>素材库</h1><p>集中查看真实生成记录中的商品素材，可直接下载单张成品。</p></div><button class="primary-small" @click="activeNav = '首页'">去生成素材</button></div>
           <div class="data-toolbar"><input v-model="listSearch" placeholder="搜索素材标题或商品名称" @keyup.enter="loadWorkspaceData" /><button @click="loadWorkspaceData">搜索</button><span v-if="listLoading">正在同步…</span><span v-else>共 {{ libraryAssets.length }} 张素材</span></div>
-          <div v-if="libraryAssets.length" class="library-grid"><article v-for="asset in libraryAssets" :key="asset.id || asset.title" class="library-card"><div class="library-image"><img :src="asset.image" :alt="asset.title" /><span>{{ asset.badge }}</span><button @click="downloadAsset(asset)">↓</button></div><div><h3>{{ asset.title }}</h3><p>{{ asset.product_name || '未命名商品' }} · {{ asset.created_at ? new Date(asset.created_at).toLocaleDateString('zh-CN') : '刚刚' }}</p></div></article></div>
+          <div v-if="libraryAssets.length" class="library-grid"><article v-for="asset in libraryAssets" :key="asset.id || asset.title" class="library-card"><div class="library-image"><img :src="asset.image" :alt="asset.title"  @error="replaceBrokenImage" /><span>{{ asset.badge }}</span><button @click="downloadAsset(asset)">↓</button></div><div><h3>{{ asset.title }}</h3><p>{{ asset.product_name || '未命名商品' }} · {{ asset.created_at ? new Date(asset.created_at).toLocaleDateString('zh-CN') : '刚刚' }}</p></div></article></div>
           <div v-else class="empty-state"><div>✦</div><h3>素材库还是空的</h3><p>完成一次生成后，全部成品会自动归档到这里。</p><button class="primary-small" @click="activeNav = '首页'">生成第一套素材</button></div>
         </section>
         <section v-else-if="activeNav === '生成记录'" class="data-page">
           <div class="data-page-header"><div><span class="eyebrow">GENERATION HISTORY</span><h1>生成记录</h1><p>每次生成的用途、风格和素材数量都会保存在账户中。</p></div><button class="primary-small" @click="activeNav = '首页'">继续生成</button></div>
-          <div v-if="generations.length" class="history-list"><article v-for="item in generations" :key="item.id" class="history-card"><div class="history-thumb"><img v-if="item.assets?.[0]?.image" :src="item.assets[0].image" alt="生成记录" /><span v-else>✦</span></div><div class="history-copy"><h3>{{ item.product_name || '未命名商品' }}</h3><p>{{ item.usage }} · {{ item.style }} · {{ item.count }} 张素材</p><small>{{ item.created_at ? new Date(item.created_at).toLocaleString('zh-CN') : '刚刚' }}</small></div><button class="list-actions-button" @click="results = item.assets; activeNav = '首页'">查看结果</button></article></div>
+          <div v-if="generations.length" class="history-list"><article v-for="item in generations" :key="item.id" class="history-card"><div class="history-thumb"><img v-if="item.assets?.[0]?.image" :src="item.assets[0].image" alt="生成记录"  @error="replaceBrokenImage" /><span v-else>✦</span></div><div class="history-copy"><h3>{{ item.product_name || '未命名商品' }}</h3><p>{{ item.usage }} · {{ item.style }} · {{ item.count }} 张素材</p><small>{{ item.created_at ? new Date(item.created_at).toLocaleString('zh-CN') : '刚刚' }}</small></div><button class="list-actions-button" @click="results = item.assets; activeNav = '首页'">查看结果</button></article></div>
           <div v-else class="empty-state"><div>◷</div><h3>还没有生成记录</h3><p>完成一次千问生成后，记录会自动出现在这里。</p><button class="primary-small" @click="activeNav = '首页'">开始生成</button></div>
           <button v-if="generations.length" class="secondary-refresh" @click="loadWorkspaceData">刷新数据</button>
         </section>
         <section v-else-if="activeNav === '模板中心'" class="data-page">
           <div class="data-page-header"><div><span class="eyebrow">TEMPLATE CENTER</span><h1>模板中心</h1><p>从真实模板库选择用途和风格，应用后回到首页生成。</p></div><span class="data-count">共 {{ templates.length }} 个模板</span></div>
-          <div v-if="templates.length" class="template-grid"><article v-for="template in templates" :key="template.id" class="template-card"><div class="template-preview"><img :src="template.preview_url" :alt="template.title" /><span>{{ template.category }}</span></div><div class="template-copy"><h3>{{ template.title }}</h3><p>{{ template.description }}</p><button class="primary-small" @click="useTemplate(template)">应用模板</button></div></article></div>
+          <div v-if="templates.length" class="template-grid"><article v-for="template in templates" :key="template.id" class="template-card"><div class="template-preview"><img :src="template.preview_url" :alt="template.title"  @error="replaceBrokenImage" /><span>{{ template.category }}</span></div><div class="template-copy"><h3>{{ template.title }}</h3><p>{{ template.description }}</p><button class="primary-small" @click="useTemplate(template)">应用模板</button></div></article></div>
           <div v-else class="empty-state"><div>▱</div><h3>模板库为空</h3><p>请先完成数据库迁移，或联系管理员添加模板。</p></div>
         </section>
         <section v-else-if="activeNav === '帮助中心'" class="data-page">
@@ -783,7 +875,7 @@ async function downloadComposedAsset(asset: Result) {
         <div class="workspace-grid">
           <section class="panel product-panel">
             <div class="step-title"><span>1</span><div><b>选择商品</b><small>上传商品图片或从素材库选择</small></div></div>
-            <div class="product-card"><div class="product-thumb"><img :src="productImage" alt="商品图片" /><button class="remove" :disabled="isRecognizing">×</button></div><div class="product-summary"><b>{{ product.name }}</b><span>{{ product.spec }} / 精品装</span><button class="outline-btn" :disabled="isRecognizing" @click="triggerUpload">{{ isRecognizing ? '✦ AI 识别中…' : '↥　更换图片' }}</button></div></div>
+            <div class="product-card"><div class="product-thumb"><img :src="productImage" alt="商品图片"  @error="replaceBrokenImage" /><button class="remove" :disabled="isRecognizing">×</button></div><div class="product-summary"><b>{{ product.name }}</b><span>{{ product.spec }} / 精品装</span><button class="outline-btn" :disabled="isRecognizing" @click="triggerUpload">{{ isRecognizing ? '✦ AI 识别中…' : '↥　更换图片' }}</button></div></div>
             <input ref="fileInput" type="file" accept="image/*" hidden @change="handleFile" />
             <div class="section-label">商品信息 <small>（AI自动识别，可编辑）</small></div>
             <label class="field"><span>商品名称</span><input v-model="product.name" maxlength="30" /><i>{{ product.name.length }}/30</i></label>
@@ -801,7 +893,7 @@ async function downloadComposedAsset(asset: Result) {
             <div class="step-title"><span>2</span><div><b>选择图片用途</b><small>AI 会根据用途自动匹配最佳风格与构图</small></div></div>
             <div class="usage-grid"><button v-for="usage in usages" :key="usage.id" class="usage-card" :class="{ chosen: activeUsage === usage.id }" @click="activeUsage = usage.id"><span class="usage-icon">{{ usage.icon }}</span><b>{{ usage.title }}</b><small>{{ usage.desc }}</small><em v-if="activeUsage === usage.id">✓</em></button></div>
             <div class="step-title style-step"><span>3</span><div><b>选择风格</b><small>AI 会根据商品自动推荐合适的风格</small></div></div>
-            <div class="style-scroll"><button v-for="style in styles" :key="style.id" class="style-card" :class="{ chosen: activeStyle === style.id }" @click="activeStyle = style.id"><div><img :src="style.image" alt="" /><em v-if="style.tag">{{ style.tag }}</em></div><b>{{ style.title }}</b></button></div>
+            <div class="style-scroll"><button v-for="style in styles" :key="style.id" class="style-card" :class="{ chosen: activeStyle === style.id }" @click="activeStyle = style.id"><div><img :src="style.image" alt=""  @error="replaceBrokenImage" /><em v-if="style.tag">{{ style.tag }}</em></div><b>{{ style.title }}</b></button></div>
             <div class="personalization">
               <div class="personalization-title"><span>✦ 个性化参数</span><small>让每次生成更贴合渠道与场景</small></div>
               <div class="parameter-group"><span>画面气质</span><div class="parameter-options"><button v-for="item in tones" :key="item.id" :class="{ chosen: activeTone === item.id }" @click="activeTone = item.id">{{ item.title }}</button></div></div>
@@ -816,7 +908,7 @@ async function downloadComposedAsset(asset: Result) {
           <section class="panel result-panel">
             <div class="result-header"><div class="step-title compact"><span class="sparkle">✦</span><div><b>生成结果</b><small>{{ generatedCopy }}</small></div></div><button class="refresh" @click="generate">⟳　重新生成</button></div>
             <div class="poster-theme-picker"><div class="poster-theme-heading"><b>海报模板</b><small>预览与下载会同步使用</small></div><div class="poster-theme-options"><button v-for="theme in posterThemes" :key="theme.id" class="poster-theme-option" :class="[{ chosen: activePosterTheme === theme.id }, `theme-${theme.id}`]" @click="activePosterTheme = theme.id"><i></i><span>{{ theme.title }}</span><small>{{ theme.desc }}</small></button></div><div class="marketing-template-row"><span>营销文案</span><button v-for="template in marketingTemplates" :key="template.id" :class="{ chosen: posterCopy.kicker === template.copy.kicker && activePosterTheme === template.theme }" @click="applyMarketingTemplate(template)">{{ template.title }}</button></div><div class="poster-copy-editor"><label><span>眉标</span><input v-model="posterCopy.kicker" maxlength="20" placeholder="跟随模板文案" /></label><label><span>主标题</span><input v-model="posterCopy.title" maxlength="30" :placeholder="product.name || '商品名称'" /></label><label><span>副文案</span><input v-model="posterCopy.subtitle" maxlength="50" placeholder="产地 · 规格" /></label><label><span>标签</span><input v-model="posterCopy.tags" maxlength="60" placeholder="用、分隔，例如：鲜甜、当季" /></label><button class="copy-reset" @click="posterCopy = { kicker: '', title: '', subtitle: '', tags: '' }">恢复默认</button></div></div>
-            <div v-if="results.length" class="result-grid"><article v-for="asset in results" :key="asset.id || asset.title" class="result-card" :class="[asset.kind, `poster-${activePosterTheme}`]"><img :src="asset.image" alt="生成结果" /><div class="result-overlay"><span>{{ asset.badge }}</span><button :aria-label="`下载${asset.badge}`" @click="downloadAsset(asset)">↓</button></div><div class="asset-text-layer"><span class="poster-kicker">{{ posterKicker(asset) }}　·　鲜图 AI</span><strong>{{ assetOverlay(asset).name }}</strong><small v-if="assetOverlay(asset).meta">{{ assetOverlay(asset).meta }}</small><div v-if="assetOverlay(asset).tags.length" class="asset-tags"><span v-for="tag in assetOverlay(asset).tags" :key="tag">{{ tag }}</span></div></div></article></div>
+            <div v-if="results.length" class="result-grid"><article v-for="asset in results" :key="asset.id || asset.title" class="result-card" :class="[asset.kind, `poster-${activePosterTheme}`]"><img :src="asset.image" alt="生成结果"  @error="replaceBrokenImage" /><div class="result-overlay"><span>{{ asset.badge }}</span><button :aria-label="`下载${asset.badge}`" @click="downloadAsset(asset)">↓</button></div><div class="asset-text-layer"><span class="poster-kicker">{{ posterKicker(asset) }}　·　鲜图 AI</span><strong>{{ assetOverlay(asset).name }}</strong><small v-if="assetOverlay(asset).meta">{{ assetOverlay(asset).meta }}</small><div v-if="assetOverlay(asset).tags.length" class="asset-tags"><span v-for="tag in assetOverlay(asset).tags" :key="tag">{{ tag }}</span></div></div></article></div>
             <div v-else class="result-empty"><span>✦</span><b>还没有生成结果</b><small>选择用途和风格后，点击一键生成整套图片</small></div>
             <div class="result-footer"><span>●　已为你生成 {{ results.length }} 张高质量图片，包含多种使用场景</span><button @click="downloadAll">⇩　下载整套素材</button></div>
           </section>

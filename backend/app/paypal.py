@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -28,6 +29,28 @@ def client_id() -> str:
 
 def mock_mode() -> bool:
     return _env("PAYPAL_MOCK_MODE", "false").lower() == "true"
+
+
+def payment_mode() -> str:
+    if mock_mode():
+        return "mock"
+    if not configured():
+        return "unconfigured"
+    host = (urlparse(base_url()).hostname or "").lower()
+    if host == "api-m.paypal.com":
+        return "live"
+    if host == "api-m.sandbox.paypal.com":
+        return "sandbox"
+    return "custom"
+
+
+def checkout_enabled() -> bool:
+    mode = payment_mode()
+    if mode in {"mock", "unconfigured"}:
+        return False
+    if _env("ENVIRONMENT", "development").lower() == "production":
+        return mode == "live"
+    return mode in {"live", "sandbox", "custom"}
 
 
 def _access_token() -> str:
