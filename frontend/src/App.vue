@@ -522,6 +522,8 @@ async function recognize(file: File) {
   if (isRecognizing.value) return
   isRecognizing.value = true
   notice.value = '图片已上传，AI 正在识别商品信息…'
+  const requestStarted = performance.now()
+  let recognitionId = 'unknown'
   try {
     const form = new FormData()
     form.append('file', file)
@@ -531,6 +533,7 @@ async function recognize(file: File) {
       throw new Error(error.detail || '图片识别失败')
     }
     const data = await response.json()
+    recognitionId = data.recognition_id ?? 'unknown'
     product.value = { ...product.value, ...data, tags: data.tags ?? product.value.tags }
     if (data.image_url) { product.value.image_url = data.image_url; productImage.value = data.image_url }
     recordRecognition(product.value)
@@ -539,6 +542,10 @@ async function recognize(file: File) {
   } catch (error) {
     notice.value = staticPreview ? '静态预览模式：这里会连接真实 AI 识别服务' : (error instanceof Error ? error.message : '图片识别失败，请稍后重试')
   } finally {
+    console.info('product_recognition_client_timing', {
+      recognition_id: recognitionId,
+      api_roundtrip_ms: Math.round(performance.now() - requestStarted),
+    })
     isRecognizing.value = false
   }
 }

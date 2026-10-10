@@ -6,6 +6,7 @@ import logging
 import hashlib
 import secrets
 import threading
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -626,44 +627,94 @@ async def paypal_webhook(request: Request, db: Session = Depends(get_db)) -> dic
 
 @app.post("/api/products/recognize")
 async def recognize_product(request: Request, file: UploadFile = File(...), user: User = Depends(current_user)) -> dict[str, Any]:
-    enforce_resource_rate_limit(request, "recognition", user.id)
-    supplied_suffix = Path(file.filename or "upload.jpg").suffix.lower()
-    if supplied_suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
-        raise HTTPException(status_code=415, detail="仅支持 JPG、PNG、WEBP 图片")
-    contents = await file.read(MAX_UPLOAD_BYTES + 1)
-    if len(contents) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="图片不能超过 10 MB")
-    if not contents:
-        raise HTTPException(status_code=422, detail="上传的图片为空")
-    suffix_by_format = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp"}
+    started = time.perf_counter()
+    recognition_id = uuid4().hex[:12]
+    timings: dict[str, Any] = {}
+    status_code = 200
+    stage = "rate_limit"
+    failure_kind = "none"
+    upload_bytes = image_width = image_height = 0
     try:
-        with Image.open(io.BytesIO(contents)) as image:
-            image_format = image.format
-            if image.width * image.height > 30_000_000:
-                raise HTTPException(status_code=413, detail="图片像素总量过大")
-            image.verify()
-    except HTTPException:
-        raise
-    except (UnidentifiedImageError, OSError, ValueError) as exc:
-        raise HTTPException(status_code=422, detail="上传内容不是有效图片") from exc
-    suffix = suffix_by_format.get(image_format or "")
-    if not suffix:
-        raise HTTPException(status_code=415, detail="仅支持 JPG、PNG、WEBP 图片内容")
-    stored_name = f"{uuid4().hex}{suffix}"
-    target = UPLOAD_DIR / stored_name
-    target.write_bytes(contents)
-    result = {"name": "崂山大樱桃", "origin": "山东·青岛崂山", "spec": "500g", "tags": ["果大", "脆甜", "新鲜", "当季"], "recognition_confidence": 0.45, "recognition_evidence": "暂未完成可靠的视觉识别，请手动确认"}
-    if not is_qwen_configured() and not allow_mock_fallback():
-        target.unlink(missing_ok=True)
-        raise HTTPException(status_code=503, detail="商品识别服务尚未配置")
-    if is_qwen_configured():
+        enforce_resource_rate_limit(request, "recognition", user.id)
+        supplied_suffix = Path(file.filename or "upload.jpg").suffix.lower()
+        if supplied_suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
+            raise HTTPException(status_code=415, detail="仅支持 JPG、PNG、WEBP 图片")
+        stage = "file_read"
+        phase_started = time.perf_counter()
+        contents = await file.read(MAX_UPLOAD_BYTES + 1)
+        upload_bytes = len(contents)
+        timings["file_read_ms"] = (time.perf_counter() - phase_started) * 1000
+        if upload_bytes > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="图片不能超过 10 MB")
+        if not contents:
+            raise HTTPException(status_code=422, detail="上传的图片为空")
+        suffix_by_format = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp"}
+        stage = "image_validation"
+        phase_started = time.perf_counter()
         try:
-            result = {**result, **qwen_recognize_product(target, suffix)}
-        except QwenError as exc:
-            if not allow_mock_fallback():
-                target.unlink(missing_ok=True)
-                raise HTTPException(status_code=502, detail=f"千问识别失败：{exc}") from exc
-    return {**result, "image_url": f"/uploads/{stored_name}", "filename": file.filename, "user_id": user.id}
+            with Image.open(io.BytesIO(contents)) as image:
+                image_format = image.format
+                image_width, image_height = image.size
+                if image_width * image_height > 30_000_000:
+                    raise HTTPException(status_code=413, detail="图片像素总量过大")
+                image.verify()
+        except HTTPException:
+            raise
+        except (UnidentifiedImageError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail="上传内容不是有效图片") from exc
+        timings["image_validation_ms"] = (time.perf_counter() - phase_started) * 1000
+        suffix = suffix_by_format.get(image_format or "")
+        if not suffix:
+            raise HTTPException(status_code=415, detail="仅支持 JPG、PNG、WEBP 图片内容")
+        stored_name = f"{uuid4().hex}{suffix}"
+        target = UPLOAD_DIR / stored_name
+        stage = "file_save"
+        phase_started = time.perf_counter()
+        target.write_bytes(contents)
+        timings["file_save_ms"] = (time.perf_counter() - phase_started) * 1000
+        result = {"name": "崂山大樱桃", "origin": "山东·青岛崂山", "spec": "500g", "tags": ["果大", "脆甜", "新鲜", "当季"], "recognition_confidence": 0.45, "recognition_evidence": "暂未完成可靠的视觉识别，请手动确认"}
+        if not is_qwen_configured() and not allow_mock_fallback():
+            target.unlink(missing_ok=True)
+            raise HTTPException(status_code=503, detail="商品识别服务尚未配置")
+        if is_qwen_configured():
+            stage = "qwen_recognition"
+            try:
+                result = {**result, **await qwen_recognize_product(target, suffix, timings=timings)}
+            except QwenError as exc:
+                if not allow_mock_fallback():
+                    target.unlink(missing_ok=True)
+                    raise HTTPException(status_code=502, detail=f"千问识别失败：{exc}") from exc
+        stage = "completed"
+        return {**result, "image_url": f"/uploads/{stored_name}", "filename": file.filename, "user_id": user.id, "recognition_id": recognition_id}
+    except HTTPException as exc:
+        status_code = exc.status_code
+        failure_kind = f"http_{exc.status_code}"
+        raise
+    except Exception as exc:
+        status_code = 500
+        failure_kind = type(exc).__name__
+        raise
+    finally:
+        logger.info(
+            "product_recognition_timing recognition_id=%s status=%d stage=%s failure_kind=%s upload_bytes=%d image=%dx%d "
+            "file_read_ms=%.1f image_validation_ms=%.1f file_save_ms=%.1f "
+            "image_preprocess_ms=%.1f model_request_ms=%.1f model_attempts=%d result_parse_ms=%.1f total_ms=%.1f",
+            recognition_id,
+            status_code,
+            stage,
+            failure_kind,
+            upload_bytes,
+            image_width,
+            image_height,
+            timings.get("file_read_ms", 0.0),
+            timings.get("image_validation_ms", 0.0),
+            timings.get("file_save_ms", 0.0),
+            timings.get("image_preprocess_ms", 0.0),
+            timings.get("model_request_ms", 0.0),
+            timings.get("model_attempts", 0),
+            timings.get("result_parse_ms", 0.0),
+            (time.perf_counter() - started) * 1000,
+        )
 
 @app.post("/api/products")
 def create_product(payload: ProductPayload, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, Any]:

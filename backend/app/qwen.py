@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 from io import BytesIO
 import json
@@ -290,6 +291,59 @@ def _request_json(method: str, url: str, payload: dict[str, Any]) -> dict[str, A
     return body
 
 
+def qwen_recognition_timeout() -> float:
+    try:
+        return max(5.0, float(_env("QWEN_RECOGNITION_TIMEOUT_SECONDS", "30")))
+    except ValueError:
+        return 30.0
+
+
+def qwen_recognition_max_retries() -> int:
+    try:
+        return max(0, min(2, int(_env("QWEN_RECOGNITION_MAX_RETRIES", "1"))))
+    except ValueError:
+        return 1
+
+
+async def _arequest_json(
+    method: str,
+    url: str,
+    payload: dict[str, Any],
+    *,
+    timings: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Non-blocking vision request with bounded retries for transient failures."""
+    max_retries = qwen_recognition_max_retries()
+    timeout = httpx.Timeout(qwen_recognition_timeout(), connect=5.0, write=15.0, pool=5.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        for attempt in range(max_retries + 1):
+            if timings is not None:
+                timings["model_attempts"] = attempt + 1
+            try:
+                response = await client.request(method, url, headers=_headers(), json=payload)
+                response.raise_for_status()
+                body = response.json()
+                break
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code >= 500 and attempt < max_retries:
+                    await asyncio.sleep(min(1.0, 0.25 * (2**attempt)))
+                    continue
+                detail = exc.response.text[:500].replace("\n", " ")
+                raise QwenError(f"HTTP {exc.response.status_code}: {detail}") from exc
+            except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                if attempt < max_retries:
+                    await asyncio.sleep(min(1.0, 0.25 * (2**attempt)))
+                    continue
+                raise QwenError(f"千问网络请求失败：{exc}") from exc
+            except (httpx.RequestError, ValueError) as exc:
+                raise QwenError(str(exc)) from exc
+    if not isinstance(body, dict):
+        raise QwenError("千问返回格式不是 JSON 对象")
+    if body.get("code") and body.get("message"):
+        raise QwenError(f"{body['code']}: {body['message']}")
+    return body
+
+
 def _data_url(path: Path, suffix: str) -> str:
     """Compress the vision input without changing the stored original upload."""
     try:
@@ -323,8 +377,17 @@ def _json_from_text(text: str) -> dict[str, Any]:
     return parsed
 
 
-def recognize_product(image_path: Path, suffix: str) -> dict[str, Any]:
+async def recognize_product(
+    image_path: Path,
+    suffix: str,
+    *,
+    timings: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Use Qwen-VL through DashScope's OpenAI-compatible vision endpoint."""
+    preprocess_started = time.perf_counter()
+    image_data_url = await asyncio.to_thread(_data_url, image_path, suffix)
+    if timings is not None:
+        timings["image_preprocess_ms"] = (time.perf_counter() - preprocess_started) * 1000
     payload = {
         "model": qwen_vision_model(),
         "messages": [
@@ -347,13 +410,18 @@ def recognize_product(image_path: Path, suffix: str) -> dict[str, Any]:
                             "产地和规格无法从图片确认时使用空字符串，tags 只能描述看得见的外观，不能臆造甜度、产地或包装承诺。"
                         ),
                     },
-                    {"type": "image_url", "image_url": {"url": _data_url(image_path, suffix)}},
+                    {"type": "image_url", "image_url": {"url": image_data_url}},
                 ],
             }
         ],
         "temperature": 0.1,
     }
-    body = _request_json("POST", f"{qwen_base_url()}/chat/completions", payload)
+    request_started = time.perf_counter()
+    try:
+        body = await _arequest_json("POST", f"{qwen_base_url()}/chat/completions", payload, timings=timings)
+    finally:
+        if timings is not None:
+            timings["model_request_ms"] = (time.perf_counter() - request_started) * 1000
     try:
         content = body["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
@@ -362,6 +430,7 @@ def recognize_product(image_path: Path, suffix: str) -> dict[str, Any]:
         content = "".join(str(item.get("text", "")) for item in content if isinstance(item, dict))
     if not isinstance(content, str):
         raise QwenError("千问视觉接口返回内容类型不正确")
+    parse_started = time.perf_counter()
     result = _json_from_text(content)
     tags = result.get("tags", [])
     if not isinstance(tags, list):
@@ -378,7 +447,7 @@ def recognize_product(image_path: Path, suffix: str) -> dict[str, Any]:
     if name in {"桃", "桃子"} and confidence > 0.75 and not any(marker in evidence for marker in peach_markers):
         confidence = 0.55
         evidence = f"桃子证据不足，需复核；原判断：{evidence}"[:60]
-    return {
+    normalized = {
         "name": name,
         "origin": str(result.get("origin") or ""),
         "spec": str(result.get("spec") or ""),
@@ -386,6 +455,9 @@ def recognize_product(image_path: Path, suffix: str) -> dict[str, Any]:
         "recognition_confidence": confidence,
         "recognition_evidence": evidence,
     }
+    if timings is not None:
+        timings["result_parse_ms"] = (time.perf_counter() - parse_started) * 1000
+    return normalized
 
 
 def build_image_prompt(product_name: str, tags: list[str] | None, plan: GenerationPlan) -> str:

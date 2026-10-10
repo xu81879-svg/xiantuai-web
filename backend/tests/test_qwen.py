@@ -1,4 +1,5 @@
 from pathlib import Path
+import asyncio
 import json
 
 import pytest
@@ -76,12 +77,14 @@ def test_recognize_product_uses_multimodal_model_and_normalizes_result(monkeypat
     monkeypatch.setenv("QWEN_MULTIMODAL_MODEL", "qwen3.8-flash")
     captured = {}
 
-    def fake_request(method, url, payload):
+    async def fake_request(method, url, payload, *, timings=None):
         captured.update({"method": method, "url": url, "payload": payload})
+        if timings is not None:
+            timings["model_attempts"] = 1
         return {"choices": [{"message": {"content": '{"name":"樱桃","tags":["新鲜","脆甜","当季","果大","多余"],"confidence":0.94,"evidence":"果实颜色和形态清晰"}'}}]}
 
-    monkeypatch.setattr(qwen, "_request_json", fake_request)
-    result = qwen.recognize_product(source, ".jpg")
+    monkeypatch.setattr(qwen, "_arequest_json", fake_request)
+    result = asyncio.run(qwen.recognize_product(source, ".jpg"))
     assert captured["payload"]["model"] == "qwen3.8-flash"
     assert result == {"name": "樱桃", "origin": "", "spec": "", "tags": ["新鲜", "脆甜", "当季", "果大"], "recognition_confidence": 0.94, "recognition_evidence": "果实颜色和形态清晰"}
     prompt = captured["payload"]["messages"][0]["content"][0]["text"]
@@ -90,12 +93,59 @@ def test_recognize_product_uses_multimodal_model_and_normalizes_result(monkeypat
     assert "杏/桃待确认" in prompt
 
 
+def test_async_recognition_request_retries_transient_network_error_once(monkeypatch):
+    calls = []
+    delays = []
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"ok": True}
+
+    class AsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def request(self, *_args, **_kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                raise qwen.httpx.ConnectError("temporary network failure")
+            return Response()
+
+    async def fake_sleep(delay):
+        delays.append(delay)
+
+    monkeypatch.setattr(qwen.httpx, "AsyncClient", AsyncClient)
+    monkeypatch.setattr(qwen, "qwen_recognition_max_retries", lambda: 1)
+    monkeypatch.setattr(qwen, "qwen_recognition_timeout", lambda: 30.0)
+    monkeypatch.setattr(qwen.asyncio, "sleep", fake_sleep)
+    timings = {}
+
+    body = asyncio.run(qwen._arequest_json("POST", "https://qwen.test", {}, timings=timings))
+
+    assert body == {"ok": True}
+    assert len(calls) == 2
+    assert delays == [0.25]
+    assert timings["model_attempts"] == 2
+
+
 def test_recognize_product_caps_unsupported_peach_confidence(monkeypatch, tmp_path: Path):
     source = tmp_path / "apricot.jpg"
     Image.new("RGB", (320, 240), (220, 120, 40)).save(source)
 
-    monkeypatch.setattr(qwen, "_request_json", lambda *args: {"choices": [{"message": {"content": '{"name":"桃子","confidence":0.92,"evidence":"橙黄色圆形果实"}'}}]})
-    result = qwen.recognize_product(source, ".jpg")
+    async def fake_request(*args, **kwargs):
+        return {"choices": [{"message": {"content": '{"name":"桃子","confidence":0.92,"evidence":"橙黄色圆形果实"}'}}]}
+
+    monkeypatch.setattr(qwen, "_arequest_json", fake_request)
+    result = asyncio.run(qwen.recognize_product(source, ".jpg"))
     assert result["recognition_confidence"] == 0.55
     assert "证据不足" in result["recognition_evidence"]
 
@@ -104,8 +154,11 @@ def test_recognize_product_keeps_peach_confidence_with_specific_evidence(monkeyp
     source = tmp_path / "peach.jpg"
     Image.new("RGB", (320, 240), (220, 120, 40)).save(source)
 
-    monkeypatch.setattr(qwen, "_request_json", lambda *args: {"choices": [{"message": {"content": '{"name":"桃子","confidence":0.92,"evidence":"密集绒毛、深长果缝和扁圆肩部"}'}}]})
-    result = qwen.recognize_product(source, ".jpg")
+    async def fake_request(*args, **kwargs):
+        return {"choices": [{"message": {"content": '{"name":"桃子","confidence":0.92,"evidence":"密集绒毛、深长果缝和扁圆肩部"}'}}]}
+
+    monkeypatch.setattr(qwen, "_arequest_json", fake_request)
+    result = asyncio.run(qwen.recognize_product(source, ".jpg"))
     assert result["recognition_confidence"] == 0.92
 
 

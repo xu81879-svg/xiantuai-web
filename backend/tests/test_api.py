@@ -1,5 +1,9 @@
 import os
 import time
+import asyncio
+import logging
+from io import BytesIO
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
@@ -333,6 +337,38 @@ def test_recognition_rejects_oversized_and_invalid_image_uploads():
             files={"file": ("not-really.png", b"not an image", "image/png")},
         )
         assert invalid_image.status_code == 422
+
+
+def test_recognition_awaits_async_model_and_logs_stage_timings(monkeypatch, tmp_path, caplog):
+    monkeypatch.setattr(main_module, "is_qwen_configured", lambda: True)
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
+    monkeypatch.setattr(main_module, "UPLOAD_DIR", upload_dir)
+
+    async def fake_recognize(_path, _suffix, *, timings):
+        timings.update({"image_preprocess_ms": 1.2, "model_request_ms": 3.4, "model_attempts": 1, "result_parse_ms": 0.2})
+        return {"name": "识别测试商品", "origin": "", "spec": "", "tags": [], "recognition_confidence": 0.9, "recognition_evidence": "测试用视觉证据"}
+
+    monkeypatch.setattr(main_module, "qwen_recognize_product", fake_recognize)
+    monkeypatch.setattr(main_module, "enforce_resource_rate_limit", lambda *_args, **_kwargs: None)
+    buffer = BytesIO()
+    Image.new("RGB", (640, 480), (200, 70, 40)).save(buffer, format="PNG")
+    buffer.seek(0)
+    request = main_module.Request({"type": "http", "headers": []})
+    upload = main_module.UploadFile(filename="recognition-test.png", file=buffer)
+
+    with caplog.at_level(logging.INFO, logger="xiantu.pipeline"):
+        response = asyncio.run(main_module.recognize_product(request, upload, SimpleNamespace(id="test-user")))
+
+    assert response["name"] == "识别测试商品"
+    assert response["recognition_id"]
+    timing_record = next(record.message for record in caplog.records if "product_recognition_timing" in record.message)
+    assert "file_read_ms=" in timing_record
+    assert "image_validation_ms=" in timing_record
+    assert "image_preprocess_ms=1.2" in timing_record
+    assert "model_request_ms=3.4" in timing_record
+    assert "model_attempts=1" in timing_record
+    assert "total_ms=" in timing_record
 
 
 def test_paypal_capture_rejects_amount_mismatch_without_crediting(monkeypatch):
